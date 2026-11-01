@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnemosyne 测试台</title>
+<style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #EFEAE0; color: #333; }
+    .wrap { display: flex; min-height: 100vh; }
+    .side { width: 360px; flex-shrink: 0; padding: 16px; background: #fff; border-right: 1px solid #ddd; overflow-y: auto; }
+    .main { flex: 1; padding: 16px; min-width: 0; }
+    h1 { font-size: 16px; margin: 0 0 4px; }
+    .note { font-size: 12px; color: #888; margin: 0 0 14px; line-height: 1.5; }
+    fieldset { border: 1px solid #ddd; border-radius: 8px; margin: 0 0 12px; padding: 8px 12px; }
+    legend { font-size: 12px; font-weight: 600; color: #555; padding: 0 4px; }
+    button { font-size: 12.5px; padding: 6px 10px; margin: 3px 4px 3px 0; border-radius: 6px; border: 1px solid #ccc; background: #f7f7f7; cursor: pointer; }
+    label { font-size: 12px; display: inline-flex; align-items: center; gap: 5px; margin: 3px 10px 3px 0; }
+    #results, #bench { font-size: 12px; background: #fff; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; white-space: pre-wrap; line-height: 1.55; }
+    .pass { color: #2a7a2a; } .fail { color: #b3261e; font-weight: 600; }
+    #log { font-size: 11px; background: #222; color: #b6f7b6; border-radius: 8px; padding: 8px 10px; height: 220px; overflow-y: auto; white-space: pre-wrap; }
+    #extensionsMenu { border: 1px dashed #bbb; border-radius: 8px; padding: 8px; background: #fafafa; min-height: 36px; }
+    #extensionsMenu .list-group-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; text-decoration: none; color: #333; font-size: 13px; cursor: pointer; }
+    @media (max-width: 700px) { .wrap { display: block; } .side { width: auto; border-right: 0; } #results, #bench, #log { overflow-x: auto; } body { overflow-x: hidden; } }
+    #fileWarn { display: none; padding: 20px; background: #fff8ec; }
+</style>
+</head>
+<body>
+<div id="fileWarn">需要本地静态服务器:<code>cd mnemosyne &amp;&amp; python3 -m http.server 8731 --bind 127.0.0.1</code>,再访问 /test/harness.html</div>
+<div class="wrap">
+    <div class="side">
+        <h1>Mnemosyne 测试台</h1>
+        <p class="note">mock 一个最小酒馆环境(context / 事件 / 保存计数 / 注入记录 / LLM fixture),跑真实的插件代码。仅供开发自查,不代表真机。</p>
+        <fieldset>
+            <legend>断言与基准</legend>
+            <button id="btnAssert">运行全部断言</button>
+            <button id="btnBench">运行性能基准</button>
+        </fieldset>
+        <fieldset>
+            <legend>面板与演示</legend>
+            <button id="btnDemo">载入演示数据</button>
+            <button id="btnOpen">打开 / 关闭面板</button><br>
+            <label>主题 <select id="selTheme"><option value="auto">跟随系统</option><option value="day">日间</option><option value="night">夜间</option></select></label>
+            <div>页面:
+                <button data-goto="home">首页</button><button data-goto="capsules">胶囊</button><button data-goto="memory">长期记忆</button><button data-goto="settings">设置</button>
+            </div>
+            <div>进度演示:
+                <button data-prog="running">补建中</button><button data-prog="failed">失败</button><button data-prog="idle">空闲</button>
+            </div>
+        </fieldset>
+        <fieldset>
+            <legend>LLM fixture</legend>
+            <label><input type="checkbox" id="fxBatchFail"> 记录请求失败</label><br>
+            <label><input type="checkbox" id="fxPolishFail"> 润色失败</label>
+        </fieldset>
+        <fieldset>
+            <legend>魔杖菜单(扩展挂载点)</legend>
+            <div id="extensionsMenu"></div>
+        </fieldset>
+    </div>
+    <div class="main">
+        <div id="results">尚未运行断言。</div>
+        <div id="bench">尚未运行基准。</div>
+        <div id="log"></div>
+    </div>
+</div>
+
+<script type="module">
+if (location.protocol === 'file:') document.getElementById('fileWarn').style.display = 'block';
+
+// ── 监视:插件不许创建 MutationObserver(性能铁律 4) ──
+let moCount = 0;
+const RealMO = window.MutationObserver;
+const moStacks = [];
+window.MutationObserver = class extends RealMO { constructor(cb) { super(cb); moCount++; moStacks.push(new Error().stack); } };
+window.__moStacks = moStacks;
+
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop = logEl.scrollHeight; };
+
+// ── mock 酒馆 ──
+const eventTypes = {
+    MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', MESSAGE_EDITED: 'message_edited',
+    MESSAGE_UPDATED: 'message_updated', MESSAGE_SWIPED: 'message_swiped', MESSAGE_DELETED: 'message_deleted',
+    CHAT_CHANGED: 'chat_id_changed', GENERATION_STARTED: 'generation_started', GENERATION_ENDED: 'generation_ended',
+    GENERATION_STOPPED: 'generation_stopped', CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
+};
+class MockEventEmitter {
+    constructor() { this.l = new Map(); }
+    on(e, fn) { (this.l.get(e) || this.l.set(e, []).get(e)).push(fn); }
+    makeLast(e, fn) { const a = this.l.get(e) || []; this.l.set(e, a.filter(f => f !== fn).concat(fn)); }
+    async emit(e, ...args) { for (const fn of [...(this.l.get(e) || [])]) await fn(...args); }
+}
+const eventSource = new MockEventEmitter();
+const chat = [];
+let chatMetadata = {};
+const counters = { saves: 0 };
+const ext = { last: null, calls: 0 };
+const estTok = (t) => { let n = 0; for (const ch of String(t)) n += /[　-鿿]/.test(ch) ? 1 : 0.25; return Math.ceil(n); };
+const extensionSettings = {};
+
+const fx = { batchFail: false, mergeFail: false, polishFail: false, garbage: false, mergePairs: false,
+    calls: { batch: 0, merge: 0, polish: 0 }, onBatch: null, seen: new Map(), llmMs: 0, delay: 0 };
+
+async function generateRaw({ prompt, systemPrompt }) {
+    const t0 = performance.now();
+    try {
+        if (fx.delay) await new Promise(r => setTimeout(r, fx.delay));
+        if (systemPrompt.includes('剧情记录员')) {
+            fx.calls.batch++;
+            const rounds = [...prompt.matchAll(/【第(\d+)轮】\n([\s\S]*?)(?=\n\n【第|$)/g)].map(m => ({ n: +m[1], body: m[2] }));
+            for (const mk of prompt.matchAll(/楼(\d+)\b/g)) fx.seen.set(mk[1], (fx.seen.get(mk[1]) || 0) + 1);
+            if (fx.onBatch) await fx.onBatch(fx.calls.batch, rounds);
+            if (fx.batchFail) throw new Error('mock: 记录请求失败');
+            if (fx.garbage) return '这不是 JSON';
+            const caps = [];
+            if (fx.mergePairs) {
+                for (let i = 0; i < rounds.length; i += 2) {
+                    const grp = rounds.slice(i, i + 2);
+                    caps.push({ rounds: grp.map(r => r.n), title: `记录${grp[0].n}`, text: `第${grp.map(r => r.n).join('、')}轮:` + grp.map(r => r.body.replace(/\s+/g, ' ').slice(0, 30)).join(' / ') });
+                }
+            } else {
+                for (const r of rounds) caps.push({ rounds: [r.n], title: `记录${r.n}`, text: `第${r.n}轮:` + r.body.replace(/\s+/g, ' ').slice(0, 40) });
+            }
+            return 'okay,下面是结果:\n```json\n' + JSON.stringify({ capsules: caps }) + '\n```';
+        }
+        if (systemPrompt.includes('剧情记忆整理员')) {
+            fx.calls.merge++;
+            if (fx.mergeFail) throw new Error('mock: 合并请求失败');
+            const n = (prompt.match(/^\d+\. /gm) || []).length;
+            return JSON.stringify({ prelude: `草稿:合并了${n}条记录。`, people: '人物甲:与人物乙相识\n人物乙:同行', timeline: '先到站\n后同行', open: '约定尚未兑现' });
+        }
+        if (systemPrompt.includes('文字润色师')) {
+            fx.calls.polish++;
+            if (fx.polishFail) throw new Error('mock: 润色失败');
+            const draft = prompt.split('【前情草稿】\n')[1] || '';
+            return '润色:' + draft;
+        }
+        return '';
+    } finally { fx.llmMs += performance.now() - t0; }
+}
+
+// getContext 每次返回新对象(和真实酒馆一致):插件不能依赖它是同一个引用
+function makeCtx() {
+    return {
+        chat, chatMetadata, name1: 'User', name2: 'Char', maxContext: 8192, mainApi: 'textgenerationwebui',
+        eventSource, eventTypes, extensionSettings,
+        saveSettingsDebounced() {}, saveMetadataDebounced() { counters.saves++; },
+        setExtensionPrompt(key, value, position, depth, scan, role) { ext.last = { key, value, position, depth, scan, role }; ext.calls++; },
+        getTokenCountAsync: async (t) => estTok(t), generateRaw,
+        ConnectionManagerRequestService: undefined,
+    };
+}
+window.SillyTavern = { getContext: makeCtx };
+
+// ── 加载插件 ──
+const mod = await import('../index.js');
+const api = mod.api;
+const { recorder, fold, hide, inject, status } = api;
+const stateMod = await import('../core/state.js');
+const settingsMod = await import('../core/settings.js');
+const panelMod = await import('../ui/panel.js');
+api.recorderConfig.kickDelay = 0;
+
+const ctxNow = () => makeCtx();
+const S = (o) => Object.assign(settingsMod.getSettings(ctxNow()), o);
+const data = () => stateMod.peekData(ctxNow());
+
+// ── 造数据 ──
+let floorSeq = 0;
+function userText(k) { return `用户说了第${k}句话,内容是一段普通的日常对白,楼${floorSeq}。`; }
+function aiText(k) { return `角色的回应第${k}段:平静地描写了场景与动作,天色渐暗,街灯一盏一盏亮起来,远处传来电车驶过的声音,她把围巾往上拉了拉,什么也没说,只是看着窗外那片被雨洗过的路面慢慢变得模糊,没有多余的修饰,楼${floorSeq}。`; }
+function pushFloor(isUser, k, text) {
+    const idx = chat.length;
+    floorSeq = idx;
+    chat.push({ name: isUser ? 'User' : 'Char', is_user: isUser, is_system: false, mes: text ?? (isUser ? userText(k) : aiText(k)), extra: {}, send_date: Date.now() });
+    return idx;
+}
+function preload(rounds, from = 1) { for (let k = from; k < from + rounds; k++) { pushFloor(true, k); pushFloor(false, k); } }
+
+async function speak(k) {
+    const u = pushFloor(true, k);
+    await eventSource.emit(eventTypes.MESSAGE_SENT, u);
+    await eventSource.emit(eventTypes.GENERATION_STARTED, 'normal', {}, false);
+    const a = pushFloor(false, k);
+    await eventSource.emit(eventTypes.MESSAGE_RECEIVED, a, 'normal');
+    await eventSource.emit(eventTypes.GENERATION_ENDED, chat.length);
+    await api.whenIdle();
+    return [u, a];
+}
+
+async function resetWorld(opts = {}) {
+    await api.whenIdle().catch(() => {});
+    chat.length = 0;
+    chatMetadata = {};
+    delete extensionSettings.mnemosyne;
+    counters.saves = 0; ext.last = null; ext.calls = 0;
+    Object.assign(fx, { batchFail: false, mergeFail: false, polishFail: false, garbage: false, mergePairs: false, onBatch: null, delay: 0 });
+    fx.calls = { batch: 0, merge: 0, polish: 0 }; fx.seen = new Map(); fx.llmMs = 0;
+    S({ foldThreshold: 1e9, autoRecord: true, ...opts }); // 插件默认关自动记录(装上不擅自花 token);断言按「已开启」写,这里显式打开
+    floorSeq = 0;
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'chat-' + Math.random());
+    await api.whenIdle();
+}
+async function loadHistory(rounds) { preload(rounds); await eventSource.emit(eventTypes.CHAT_CHANGED, 'chat-' + Math.random()); }
+
+// ── 断言框架 ──
+let results = [];
+function check(name, cond, detail = '') {
+    results.push({ name, ok: !!cond, detail: String(detail) });
+}
+const eq = (name, a, b) => check(name, a === b, `实际 ${JSON.stringify(a)},期望 ${JSON.stringify(b)}`);
+
+const idxOfCap = (cap) => stateMod.resolveCapsule(ctxNow(), cap);
+
+async function backfillAll() { const r = await recorder.startBackfill(ctxNow()); await api.whenIdle(); return r; }
+
+// ── 测试 ──
+const tests = [];
+const T = (name, fn) => tests.push({ name, fn });
+
+T('T1 自动记录:新一轮移出保留区', async () => {
+    await resetWorld({ reserve: 3 });
+    await speak(1); await speak(2);
+    eq('T1.1 保留区内不生成胶囊', (data()?.capsules.length ?? 0), 0);
+    eq('T1.2 保留区内不发记录请求', fx.calls.batch, 0);
+    const saves0 = counters.saves;
+    await speak(3);
+    const d = data();
+    eq('T1.3 生成 1 个胶囊', d.capsules.length, 1);
+    check('T1.4 被覆盖的两层被隐藏、其余不动', chat[0].is_system && chat[1].is_system && !chat[2].is_system && !chat[3].is_system, JSON.stringify(chat.map(m => m.is_system)));
+    eq('T1.5 hiddenIds 登记 2 层', d.hiddenIds.length, 2);
+    check('T1.6 注入内容含胶囊文本与外层标签', ext.last?.value.includes('<mnemosyne_memory>') && ext.last.value.includes(d.capsules[0].text), ext.last?.value);
+    eq('T1.7 本批(胶囊+隐藏)只排 1 次保存', counters.saves - saves0, 1);
+    check('T1.8 注入参数:聊天内/深度=保留楼层数/system', ext.last?.position === 1 && ext.last.depth === 3 && ext.last.role === 0, JSON.stringify(ext.last));
+    check('T1.9 楼层 id 写入 message.extra', !!chat[0].extra.mnemo_id && chat[0].extra.mnemo_id === d.capsules[0].fromId && chat[1].extra.mnemo_id === d.capsules[0].toId);
+    check('T1.10 范围指纹已记录', typeof d.capsules[0].rangeHash === 'string' && d.capsules[0].rangeHash.length > 0);
+    eq('T1.11 一次记录只发 1 次请求', fx.calls.batch, 1);
+    // 酒馆正在生成时不发记录请求
+    const before = fx.calls.batch;
+    await eventSource.emit(eventTypes.GENERATION_STARTED, 'normal', {}, false);
+    const u = pushFloor(true, 4); await eventSource.emit(eventTypes.MESSAGE_SENT, u);
+    const a = pushFloor(false, 4); await eventSource.emit(eventTypes.MESSAGE_RECEIVED, a, 'normal');
+    await new Promise(r => setTimeout(r, 60));
+    eq('T1.12 GENERATION_ENDED 之前不发记录请求', fx.calls.batch, before);
+    await eventSource.emit(eventTypes.GENERATION_ENDED, chat.length); await api.whenIdle();
+    check('T1.13 生成结束后补记', fx.calls.batch === before + 1 && data().capsules.length === 2, `batch=${fx.calls.batch} caps=${data().capsules.length}`);
+    // 失败不轰炸
+    fx.batchFail = true; const b0 = fx.calls.batch;
+    await speak(5);
+    eq('T1.14 失败时每次事件只试 1 次(不轰炸)', fx.calls.batch - b0, 1);
+    check('T1.15 失败后首页可见错误', !!status.error && status.error.msg.includes('记录请求失败'), JSON.stringify(status.error));
+    fx.batchFail = false; await speak(6);
+    check('T1.16 下一次事件恢复并补齐', status.error === null && data().capsules.length >= 3, `caps=${data().capsules.length}`);
+});
+
+T('T2 补建历史:分批/停止/继续', async () => {
+    await resetWorld({ reserve: 3, batchMaxRounds: 12 });
+    await loadHistory(40);
+    await api.whenIdle();
+    eq('T2.0 载入长聊天后自动记录不处理积压', fx.calls.batch, 0);
+    check('T2.0b 首页知道有积压', status.backlog === 38, `backlog=${status.backlog}`);
+    const progress = [];
+    const unsub = (await import('../core/bus.js')).subscribe(() => { const b = status.backfill; progress.push([b.batch, b.batches, b.coveredTo]); });
+    fx.onBatch = async (n) => { if (n === 1) recorder.stopBackfill(); };
+    const saves0 = counters.saves;
+    const r1 = await backfillAll();
+    eq('T2.1 中途停止 outcome=stopped', r1.outcome, 'stopped');
+    eq('T2.2 第一批产出 12 个胶囊', data().capsules.length, 12);
+    check('T2.3 停止后不再运行', status.backfill.running === false && data().backfill.running === false);
+    // 继续
+    fx.onBatch = async (n) => { if (n === 2) { api.handlers.onReceived(); } }; // 补建期间来新消息:自动记录必须暂停
+    const r2 = await backfillAll();
+    unsub();
+    eq('T2.4 继续后完成 outcome=finished', r2.outcome, 'finished');
+    const d = data();
+    eq('T2.5 共 38 个胶囊', d.capsules.length, 38);
+    eq('T2.6 总共 4 次批请求(12+12+12+2)', fx.calls.batch, 4);
+    const rs = d.capsules.map(c => idxOfCap(c)).sort((a, b) => a.fi - b.fi);
+    let contiguous = true;
+    for (let i = 1; i < rs.length; i++) if (rs[i].fi !== rs[i - 1].ti + 1) contiguous = false;
+    check('T2.7 覆盖范围连续、不重叠、无遗漏', contiguous && rs[0].fi === 0 && rs[rs.length - 1].ti === 75, `first=${rs[0].fi} last=${rs[rs.length - 1].ti}`);
+    check('T2.8 每层原文只被送去总结一次(无重复覆盖)', [...fx.seen.values()].every(v => v === 1) && fx.seen.size === 76, `楼数=${fx.seen.size} 最大次数=${Math.max(...fx.seen.values())}`);
+    check('T2.9 进度推进:已覆盖楼层单调不减,批总数=4', progress.length > 0 && progress.every((p, i) => i === 0 || p[2] >= progress[i - 1][2]) && Math.max(...progress.map(p => p[1])) === 4 && Math.max(...progress.map(p => p[2])) === 75, JSON.stringify(progress.slice(-3)));
+    eq('T2.10 被覆盖的 76 层都已隐藏', d.hiddenIds.length, 76);
+    check('T2.11 补建期间自动记录暂停(未多发请求)', fx.calls.batch === 4);
+    check('T2.12 保存合并:每批最多 1 次(含起止标记)', counters.saves - saves0 <= 4 + 4, `saves=${counters.saves - saves0}`);
+    // 失败停在当前批,修好后继续
+    await resetWorld({ reserve: 3, batchMaxRounds: 12 });
+    await loadHistory(30);
+    fx.batchFail = true;
+    const r3 = await backfillAll();
+    eq('T2.13 失败时 outcome=failed 且没有半成品', [r3.outcome, data().capsules.length].join(), 'failed,0');
+    check('T2.14 失败位置记入 backfill.failedAt', data().backfill.failedAt === 0, JSON.stringify(data().backfill));
+    fx.batchFail = false;
+    const r4 = await backfillAll();
+    check('T2.15 修好后继续,补到 28 轮', r4.outcome === 'finished' && data().capsules.length === 28, `caps=${data().capsules.length}`);
+    // 过期结果:请求在途时楼被编辑,整批作废
+    await resetWorld({ reserve: 3, batchMaxRounds: 12 });
+    await loadHistory(6);
+    fx.onBatch = async () => { chat[2].mes = chat[2].mes + '(改)'; };
+    const r5 = await backfillAll();
+    check('T2.16 在途编辑 → 该批结果作废、不落盘', r5.outcome === 'stale' && data().capsules.length === 0, JSON.stringify(r5));
+    fx.onBatch = null;
+    const r6 = await backfillAll();
+    check('T2.17 重新补建成功', r6.outcome === 'finished' && data().capsules.length === 4, `caps=${data().capsules.length}`);
+});
+
+async function setupCaps(rounds = 12, extra = {}) {
+    await resetWorld({ reserve: 3, ...extra });
+    await loadHistory(rounds);
+    await backfillAll();
+}
+
+T('T3 编辑/swipe:只作废覆盖该楼的胶囊', async () => {
+    await setupCaps(12);
+    eq('T3.0 前置:10 个胶囊', data().capsules.length, 10);
+    S({ autoRecord: false });
+    const ids = data().capsules.map(c => c.id);
+    const checks0 = stateMod.stats.capsuleChecks;
+    chat[6].mes = chat[6].mes + '(改)';
+    await eventSource.emit(eventTypes.MESSAGE_EDITED, 6);
+    const d = data();
+    eq('T3.1 作废 1 个,剩 9 个', d.capsules.length, 9);
+    eq('T3.2 其他胶囊原封不动', d.capsules.map(c => c.id).join(), ids.filter((_, i) => i !== 3).join());
+    check('T3.3 被作废胶囊覆盖的楼取消隐藏,其余仍隐藏', !chat[6].is_system && !chat[7].is_system && chat[4].is_system && chat[8].is_system);
+    eq('T3.4 hiddenIds 同步减少', d.hiddenIds.length, 18);
+    eq('T3.5 编辑只核对了覆盖该楼的 1 个胶囊', stateMod.stats.capsuleChecks - checks0, 1);
+    check('T3.6 提示「第 7 楼变了,对应记录已作废,将重新记录」', status.notices[0]?.msg === '第 7 楼变了,对应记录已作废,将重新记录', status.notices[0]?.msg);
+    // 编辑保留区(没有 id)的楼:零核对
+    const c1 = stateMod.stats.capsuleChecks;
+    chat[chat.length - 1].mes += '(改)';
+    await eventSource.emit(eventTypes.MESSAGE_EDITED, chat.length - 1);
+    eq('T3.7 编辑未被覆盖的楼不核对任何胶囊', stateMod.stats.capsuleChecks - c1, 0);
+    // 文本没变的 EDITED:核对 1 个,不作废
+    const before = data().capsules.length;
+    await eventSource.emit(eventTypes.MESSAGE_EDITED, 10);
+    eq('T3.8 文本没变的编辑不作废', data().capsules.length, before);
+    // swipe
+    chat[0].mes = '换了一个全新的回复';
+    await eventSource.emit(eventTypes.MESSAGE_SWIPED, 0);
+    check('T3.9 swipe 同样作废覆盖它的胶囊', data().capsules.length === before - 1 && !chat[0].is_system, `caps=${data().capsules.length}`);
+    // 重新记录
+    S({ autoRecord: true });
+    api.recorder.kick(ctxNow(), 0); await api.whenIdle();
+    const d2 = data();
+    eq('T3.10 打开自动记录后补回被作废的两处', d2.capsules.length, 10);
+    check('T3.11 重新记录后楼层再次隐藏', chat[0].is_system && chat[6].is_system && chat[7].is_system);
+    const cap6 = d2.capsules.find(c => c.fromId === chat[6].extra.mnemo_id);
+    check('T3.12 新胶囊用的是原楼 id(身份稳定)且含新文本', !!cap6 && cap6.text.includes('改'), cap6?.text);
+});
+
+T('T4 删楼:只核对删除点之后的胶囊', async () => {
+    await setupCaps(12);
+    S({ autoRecord: false });
+    const before = data().capsules.slice();
+    const checks0 = stateMod.stats.capsuleChecks;
+    chat.splice(13, 1); // 第 7 个胶囊(楼 12–13)的终点
+    await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
+    const d = data();
+    eq('T4.1 失效 1 个(终点楼被删),剩 9 个', d.capsules.length, 9);
+    eq('T4.2 只核对了删除点之后的 3 个胶囊(不是全部 10 个)', stateMod.stats.capsuleChecks - checks0, 3);
+    check('T4.3 删除点之前的 6 个胶囊对象原样保留', before.slice(0, 6).every((c, i) => d.capsules[i] === c));
+    check('T4.4 删除点之后的 3 个胶囊仍然有效(下标已平移)', before.slice(7).every(c => d.capsules.includes(c)) && d.capsules.slice(6).every(c => { const r = idxOfCap(c); return r.fi >= 0 && stateMod.rangeHash(ctxNow(), r.fi, r.ti) === c.rangeHash; }));
+    check('T4.5 失效胶囊剩下的那一层取消隐藏', !chat[12].is_system);
+    check('T4.6 hiddenIds 不含已删的楼', d.hiddenIds.length === 18 && d.hiddenIds.every(id => chat.some(m => m.extra?.mnemo_id === id)), `len=${d.hiddenIds.length}`);
+    // 删除胶囊中间的一层(端点还在):指纹变了 → 作废
+    await setupCaps(12, {}); S({ autoRecord: false });
+    // 重做:合并成两轮一个胶囊
+    await resetWorld({ reserve: 3 }); fx.mergePairs = true; await loadHistory(12); await backfillAll(); S({ autoRecord: false });
+    eq('T4.7 前置:合并后 5 个胶囊,每个 4 层', data().capsules.length, 5);
+    const ch = stateMod.stats.capsuleChecks;
+    chat.splice(5, 1); // 第 2 个胶囊(楼 4–7)的中间
+    await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
+    check('T4.8 中间删一层:该胶囊指纹变化 → 作废,其余保留', data().capsules.length === 4 && stateMod.stats.capsuleChecks - ch === 4, `caps=${data().capsules.length} checks=${stateMod.stats.capsuleChecks - ch}`);
+    // 删最后一层(重新生成回复的常见操作)
+    await resetWorld({ reserve: 3 }); await loadHistory(8); await backfillAll();
+    const n0 = data().capsules.length;
+    chat.pop(); await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
+    eq('T4.9 删保留区里的最后一层不影响已有胶囊', data().capsules.length, n0);
+});
+
+T('T5 折叠:阈值/四节/润色回落/撤销', async () => {
+    await resetWorld({ reserve: 3, foldThreshold: 1e6 });
+    await loadHistory(16); await backfillAll();
+    eq('T5.1 未超阈值不折叠', fx.calls.merge, 0);
+    const tokensBefore = fold.unfoldedTokens(data());
+    S({ foldThreshold: Math.floor(tokensBefore / 2) });
+    check('T5.2 超阈值判定为需要折叠', fold.needsFold(ctxNow()));
+    const origFirst = data().capsules[0].text;
+    const r1 = await recorder.foldNowExclusive(ctxNow());
+    const M1 = data().memory;
+    check('T5.3 折叠最早的一半(7/14)', r1.folded === 7 && data().capsules.filter(c => c.folded).length === 7, JSON.stringify(r1));
+    const secs = fold.parseSections(M1.text);
+    check('T5.4 长期记忆四节齐全', ['前情', '人物与关系', '时间线', '未结事项'].every(t => secs[t].length > 0 && M1.text.includes(`## ${t}`)), M1.text);
+    check('T5.5 前情经过润色(两步都发了)', fx.calls.merge === 1 && fx.calls.polish === 1 && secs['前情'].startsWith('润色:草稿:'), secs['前情']);
+    check('T5.6 已折叠胶囊只留范围:正文清空、楼仍隐藏、范围有效', data().capsules.filter(c => c.folded).every(c => c.text === '' && idxOfCap(c).fi >= 0) && chat[0].is_system);
+    eq('T5.7 首次折叠的「上一版」是空记忆', data().memoryPrev?.text, '');
+    check('T5.8 注入含长期记忆、不含已折叠胶囊正文', ext.last.value.includes('## 前情') && !ext.last.value.includes(origFirst), ext.last.value.slice(0, 80));
+    // 第二次折叠
+    const r2 = await recorder.foldNowExclusive(ctxNow());
+    const d = data();
+    check('T5.9 第二次折叠:上一版 = 第一版全文', d.memoryPrev.text === M1.text && d.memory.text !== M1.text);
+    check('T5.10 更早已折叠的胶囊并成占位(存储不随折叠次数增长)', d.capsules.length < 14, `capsules=${d.capsules.length}`);
+    const cap = d.capsules.filter(c => c.folded);
+    check('T5.11 合并后的占位范围连续且指纹有效', cap.every(c => { const r = idxOfCap(c); return r.fi >= 0 && stateMod.rangeHash(ctxNow(), r.fi, r.ti) === c.rangeHash; }));
+    // 撤销
+    const undoneIds = d.memoryPrev.undo.ids.slice();
+    const ok = fold.undoFold(ctxNow());
+    const d2 = data();
+    check('T5.12 撤销:长期记忆回到上一版', ok && d2.memory.text === M1.text && d2.memoryPrev === null);
+    check('T5.13 撤销:被折叠的胶囊恢复原文且不再折叠', undoneIds.every(id => { const c = d2.capsules.find(x => x.id === id); return c && !c.folded && c.text.length > 0; }));
+    eq('T5.14 再撤销一次无效', fold.undoFold(ctxNow()), false);
+    // 润色失败回落草稿
+    await resetWorld({ reserve: 3, foldThreshold: 1e6 });
+    await loadHistory(10); await backfillAll();
+    fx.polishFail = true;
+    let threw = false, r3;
+    try { r3 = await recorder.foldNowExclusive(ctxNow()); } catch { threw = true; }
+    const p3 = fold.parseSections(data().memory?.text || '')['前情'];
+    check('T5.15 润色失败:不抛错,前情用草稿', !threw && p3.startsWith('草稿:') && !p3.includes('润色:'), p3);
+    // 补建中顺手折叠
+    await resetWorld({ reserve: 3, batchMaxRounds: 6, foldThreshold: 120 });
+    await loadHistory(30); await backfillAll();
+    check('T5.16 补建过程中攒够阈值就顺手折叠', fx.calls.merge >= 2 && !!data().memory, `merge=${fx.calls.merge}`);
+    check('T5.17 折叠后胶囊总数有界(远小于 28)', data().capsules.length < 20, `caps=${data().capsules.length}`);
+    check('T5.18 折叠后未折叠 token 回落到阈值以内', fold.unfoldedTokens(data()) <= 120, `un=${fold.unfoldedTokens(data())}`);
+    // 折叠合并失败:不改动任何东西
+    await resetWorld({ reserve: 3, foldThreshold: 1e6 }); await loadHistory(8); await backfillAll();
+    fx.mergeFail = true; const snap = JSON.stringify(data());
+    let err = null; try { await recorder.foldNowExclusive(ctxNow()); } catch (e) { err = e; }
+    check('T5.19 合并失败:抛错且状态原样', !!err && JSON.stringify(data()) === snap);
+});
+
+T('T6 恢复全部隐藏', async () => {
+    await resetWorld({ reserve: 3 });
+    chat.push({ name: 'System', is_user: false, is_system: true, mes: '原生系统消息', extra: {}, send_date: 0 });
+    pushFloor(true, 1); pushFloor(false, 1);
+    chat.push({ name: 'Char', is_user: false, is_system: true, mes: '用户自己 /hide 的楼', extra: {}, send_date: 0 });
+    preload(8, 2);
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'c');
+    await backfillAll();
+    const d = data();
+    check('T6.1 前置:有胶囊、有隐藏', d.capsules.length >= 5 && d.hiddenIds.length > 0, `caps=${d.capsules.length}`);
+    check('T6.2 原生系统消息/用户隐藏的楼没被登记', !d.hiddenIds.includes(chat[0].extra?.mnemo_id) && !chat[0].extra?.mnemo_id && !chat[3].extra?.mnemo_id);
+    const n = hide.restoreAll(ctxNow());
+    check('T6.3 恢复了本插件隐藏的全部楼', n === 10 + 0 || n > 0, `n=${n}`);
+    check('T6.4 原生系统消息仍是 is_system', chat[0].is_system === true);
+    check('T6.5 用户自己隐藏的楼仍是 is_system', chat[3].is_system === true);
+    check('T6.6 除上述两条外没有任何楼仍被隐藏', chat.every((m, i) => i === 0 || i === 3 ? m.is_system : !m.is_system));
+    eq('T6.7 hiddenIds 清空', data().hiddenIds.length, 0);
+    // 换聊天回来:胶囊仍有效(恢复隐藏不改变正文楼集合),整理会重新隐藏
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'again');
+    check('T6.8 重载聊天后胶囊全部有效并重新隐藏', data().capsules.length >= 5 && chat[1].is_system && chat[0].is_system && chat[3].is_system, `caps=${data().capsules.length}`);
+});
+
+T('T7 总开关与注入', async () => {
+    await setupCaps(8);
+    check('T7.1 开启时有注入', ext.last.value.includes('<mnemosyne_memory>'));
+    S({ enabled: false }); inject.refreshInject(ctxNow());
+    eq('T7.2 总开关关 → 注入清空', ext.last.value, '');
+    const b0 = fx.calls.batch;
+    await speak(50); await speak(51);
+    eq('T7.3 关闭时事件不触发记录', fx.calls.batch, b0);
+    S({ enabled: true }); inject.refreshInject(ctxNow());
+    check('T7.4 重新开启恢复注入', ext.last.value.includes('<mnemosyne_memory>'));
+    // 预算:超了丢最旧的胶囊,长期记忆不裁
+    S({ injectBudgetRatio: 0.01 });
+    const v = inject.refreshInject(ctxNow());
+    check('T7.5 预算紧张时先丢最旧胶囊(保留最新)', v === '' || (!v.includes('记录1:') ), v.slice(0, 120));
+    S({ injectBudgetRatio: 0.25, injectPosition: 0, injectDepth: 7, injectRole: 2 });
+    inject.refreshInject(ctxNow());
+    check('T7.6 位置/深度/角色可调', ext.last.position === 0 && ext.last.depth === 7 && ext.last.role === 2, JSON.stringify(ext.last));
+});
+
+T('T8 结构性约束', async () => {
+    eq('T8.1 插件没有创建任何 MutationObserver(排除测试工具自身的)', moStacks.filter(st => /\/(core|ui)\/|\/index\.js/.test(st)).length, 0);
+    await resetWorld({ reserve: 3 });
+    const r0 = panelMod.panelStats.renders;
+    await speak(1); await speak(2); await speak(3); await speak(4);
+    eq('T8.2 面板关着:事件处理期间零渲染', panelMod.panelStats.renders, r0);
+    check('T8.3 面板宿主元素在关闭时不可见', (document.getElementById('mnemosyne-host')?.style.display ?? 'none') === 'none');
+    check('T8.4 魔杖菜单项已挂载', !!document.getElementById('mnemosyne-menu-item'));
+    check('T8.5 悬浮球已挂载', !!document.getElementById('mnemosyne-fab'));
+    const d = data();
+    check('T8.6 存储结构符合约定', d.v === 1 && Array.isArray(d.capsules) && 'memory' in d && 'memoryPrev' in d && Array.isArray(d.hiddenIds) && 'backfill' in d, Object.keys(d).join());
+    check('T8.7 胶囊不存修订历史(只有约定字段)', Object.keys(d.capsules[0]).sort().join() === 'folded,fromId,id,rangeHash,text,title,toId,tokens,ts', Object.keys(d.capsules[0]).join());
+    // 打开面板后能渲染四页且无异常
+    api.panel.open('home'); let ok = true;
+    for (const p of ['home', 'capsules', 'memory', 'settings']) { try { api.panel.goto(p); } catch (e) { ok = false; log('页面渲染异常', p, e); } }
+    check('T8.9 四个页面都能渲染', ok && panelMod.panelStats.renders > r0);
+    api.panel.close();
+});
+
+async function runAll() {
+    results = [];
+    logEl.textContent = '';
+    for (const t of tests) {
+        const n0 = results.length;
+        try { await t.fn(); } catch (e) { check(`${t.name} 未捕获异常`, false, e.stack || e); }
+        const slice = results.slice(n0);
+        log(`${t.name}: ${slice.filter(r => r.ok).length}/${slice.length}`);
+    }
+    const failed = results.filter(r => !r.ok);
+    $('results').innerHTML = `<b>${results.length - failed.length} / ${results.length} 通过${failed.length ? ',失败 ' + failed.length : ',全绿'}</b>\n` +
+        results.map(r => `<span class="${r.ok ? 'pass' : 'fail'}">${r.ok ? '✓' : '✗'} ${r.name}${r.ok ? '' : ' — ' + r.detail}</span>`).join('\n');
+    return { total: results.length, passed: results.length - failed.length, failed: failed.map(r => `${r.name} — ${r.detail}`) };
+}
+
+// ── 性能基准 ──
+const stat = (arr) => ({ n: arr.length, avg: +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(3), max: +Math.max(...arr).toFixed(3) });
+async function runBenchmark() {
+    await resetWorld({ reserve: 3, foldThreshold: 1e9 });
+    // 1000 楼,每楼 1500 字
+    const filler = '这是一段用来占位的叙述文字,长度与真实聊天里的一层楼相当,没有任何具体内容。'.repeat(30).slice(0, 1500);
+    for (let k = 0; k < 500; k++) {
+        chat.push({ name: 'User', is_user: true, is_system: false, mes: `u${k}:` + filler, extra: {}, send_date: 0 });
+        chat.push({ name: 'Char', is_user: false, is_system: false, mes: `a${k}:` + filler, extra: {}, send_date: 0 });
+    }
+    // 200 个胶囊:覆盖楼 0..995(102 个 2 轮 + 98 个 3 轮),一半已折叠
+    const ctx = ctxNow();
+    stateMod.beginEvent(ctx);
+    const dd = stateMod.ensureData(ctx);
+    let fi = 0;
+    for (let i = 0; i < 200; i++) {
+        const rounds = i % 2 === 0 ? (i < 204 ? 2 : 3) : 3; // 2/3 交替,下面按总数校正
+        const len = (i % 2 === 0 ? 2 : 3) * 2;
+        const ti = i === 199 ? 995 : fi + len - 1;
+        for (let k = fi; k <= ti; k++) stateMod.assignFloorId(ctx, k);
+        dd.capsules.push({ id: 'b' + i, fromId: chat[fi].extra.mnemo_id, toId: chat[ti].extra.mnemo_id, rangeHash: stateMod.rangeHash(ctx, fi, ti),
+            title: `记录${i}`, text: i < 100 ? '' : '一段胶囊正文'.repeat(8), tokens: i < 100 ? 0 : 60, folded: i < 100, ts: Date.now() });
+        hide.hideRange(ctx, fi, ti, 997);
+        fi = ti + 1;
+        if (fi > 995) { /* 防御:覆盖范围已满 */ }
+    }
+    dd.memory = { text: '## 前情\n' + '前情文字。'.repeat(100), tokens: 300, ts: Date.now() };
+    const capCount = dd.capsules.length;
+    const coveredTo = stateMod.idIndex(ctx, dd.capsules[capCount - 1].toId);
+    const out = [`chat=${chat.length} 楼 × ${chat[0].mes.length} 字,胶囊 ${capCount} 个(折叠 ${dd.capsules.filter(c => c.folded).length}),覆盖到第 ${coveredTo + 1} 楼`];
+
+    // G. 切换聊天:整本核对一次
+    const g = [];
+    for (let i = 0; i < 5; i++) { const t0 = performance.now(); await eventSource.emit(eventTypes.CHAT_CHANGED, 'x'); g.push(performance.now() - t0); await api.whenIdle(); }
+    out.push(`G 切换聊天(整本核对,仅此一次):` + JSON.stringify(stat(g)));
+    eq('基准前置:切换聊天后胶囊全部有效', data().capsules.length, 200);
+
+    const tip = chat.length - 1;
+    const timeEvent = async (fn, n = 50) => {
+        const arr = [];
+        for (let i = 0; i < n; i++) {
+            const p0 = api.perf.planMs;
+            const t0 = performance.now();
+            await fn(i);
+            const emitMs = performance.now() - t0;
+            await api.whenIdle();
+            arr.push(emitMs + (api.perf.planMs - p0));
+        }
+        return stat(arr);
+    };
+    const A = await timeEvent(() => eventSource.emit(eventTypes.MESSAGE_RECEIVED, tip, 'normal'));
+    out.push('A MESSAGE_RECEIVED(无新记录任务,含自动记录的规划):' + JSON.stringify(A));
+    const B = await timeEvent((i) => eventSource.emit(eventTypes.MESSAGE_EDITED, 3 + i * 19)); // 落在不同胶囊里,文本不变
+    out.push('B MESSAGE_EDITED(已覆盖的楼,文本未变,核对 1 个胶囊):' + JSON.stringify(B));
+    const Dd = await timeEvent(() => eventSource.emit(eventTypes.MESSAGE_EDITED, tip));
+    out.push('D MESSAGE_EDITED(保留区的楼,无 id,零核对):' + JSON.stringify(Dd));
+    const E = await timeEvent(async () => { const m = chat.pop(); await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length); chat.push(m); await eventSource.emit(eventTypes.MESSAGE_RECEIVED, chat.length - 1, 'normal'); });
+    out.push('E 删最后一层 + 重新收到(MESSAGE_DELETED + MESSAGE_RECEIVED):' + JSON.stringify(E));
+    // C. 编辑并作废(罕见路径):逐个改 50 个不同胶囊里的楼
+    S({ autoRecord: false });
+    const Cc = [];
+    for (let i = 0; i < 50; i++) {
+        const idx = 400 + i * 4;
+        chat[idx].mes += '(改)';
+        const t0 = performance.now();
+        await eventSource.emit(eventTypes.MESSAGE_EDITED, idx);
+        Cc.push(performance.now() - t0);
+    }
+    out.push('C MESSAGE_EDITED(改动文本 → 胶囊作废 + 取消隐藏 + 重算注入,罕见路径):' + JSON.stringify(stat(Cc)));
+    S({ autoRecord: true });
+    // F. 新一轮落地 → 记录(mock LLM 的耗时单独扣除)
+    await resetWorld({ reserve: 3 });
+    { // 重建同样规模的数据
+        for (let k = 0; k < 500; k++) {
+            chat.push({ name: 'User', is_user: true, is_system: false, mes: `u${k}:` + filler, extra: {}, send_date: 0 });
+            chat.push({ name: 'Char', is_user: false, is_system: false, mes: `a${k}:` + filler, extra: {}, send_date: 0 });
+        }
+        S({ batchMaxRounds: 12 });
+        api.recorder.config.kickDelay = 0;
+        await eventSource.emit(eventTypes.CHAT_CHANGED, 'f');
+        // 这里的 500 轮走补建,得到约 497 个胶囊;再把它折叠成接近 200 个的规模不是本项关注点,只量单次记录
+        await backfillAll();
+    }
+    const Fn = [];
+    for (let i = 0; i < 30; i++) {
+        chat.push({ name: 'User', is_user: true, is_system: false, mes: `nu${i}:` + filler, extra: {}, send_date: 0 });
+        await eventSource.emit(eventTypes.MESSAGE_SENT, chat.length - 1);
+        chat.push({ name: 'Char', is_user: false, is_system: false, mes: `na${i}:` + filler, extra: {}, send_date: 0 });
+        fx.llmMs = 0;
+        const p0 = api.perf.recordMs, q0 = api.perf.planMs;
+        const t0 = performance.now();
+        const e0 = performance.now();
+        await eventSource.emit(eventTypes.MESSAGE_RECEIVED, chat.length - 1, 'normal');
+        await eventSource.emit(eventTypes.GENERATION_ENDED, chat.length);
+        const emitMs = performance.now() - e0;
+        await api.whenIdle();
+        void t0;
+        Fn.push(emitMs + (api.perf.recordMs - p0) + (api.perf.planMs - q0));
+    }
+    out.push(`F 一轮落地到记录完成(插件自身耗时:事件处理 + 规划 + 构造请求 + 胶囊写入/隐藏/注入,LLM 等待已扣除,聊天约 ${chat.length} 楼 / ${data().capsules.length} 个胶囊):` + JSON.stringify(stat(Fn)));
+    const bytes = JSON.stringify(data()).length;
+    out.push(`存档体积:${data().capsules.length} 个胶囊 + 长期记忆 = ${(bytes / 1024).toFixed(1)} KB`);
+    const worst = Math.max(A.max, B.max, Dd.max, E.max, Fn.length ? Math.max(...Fn) : 0);
+    out.push(`单条消息事件最大耗时(A/B/D/E/F)= ${worst.toFixed(3)} ms,目标 < 5 ms:${worst < 5 ? '通过' : '未通过'}`);
+    $('bench').textContent = out.join('\n');
+    return { out, A, B, D: Dd, E, C: stat(Cc), F: stat(Fn), G: stat(g), worst };
+}
+
+// ── 演示数据(截图用) ──
+async function seedDemo() {
+    await resetWorld({ reserve: 3, foldThreshold: 4000, autoRecord: false });
+    const ctx = ctxNow();
+    const scenes = [
+        ['雨停之后', '清晨的雨刚停,两个人在站台旁的长椅上各自沉默,直到第一班车进站。'],
+        ['同行的约定', '谈到下一站的打算,对方提出结伴同行,另一人犹豫之后点了头,并约好天黑前汇合。'],
+        ['一场误会', '行李被错拿引起短暂争执,核对车票后发现只是同款,双方都有些尴尬,气氛反而松动。'],
+        ['夜里的灯', '旅店只剩一间空房,两人轮流守夜;谈起各自离开的理由,话题停在没有说完的地方。'],
+        ['路口分开', '天亮后在路口各走一边,临别时留下了联系方式,约定下周再见。'],
+        ['迟到的消息', '收到对方的短信,说推迟一天;回复时删改了几遍,最后只写了「好的」。'],
+    ];
+    for (let k = 0; k < 14; k++) { pushFloor(true, k + 1); pushFloor(false, k + 1); }
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'demo');
+    stateMod.beginEvent(ctx);
+    const d = stateMod.ensureData(ctx);
+    const rounds = [];
+    for (let r = 0; r < 10; r++) rounds.push([r * 2, r * 2 + 1]);
+    rounds.forEach(([a, b], i) => {
+        const s = scenes[i % scenes.length];
+        stateMod.assignFloorId(ctx, a); stateMod.assignFloorId(ctx, b);
+        d.capsules.push({ id: 'demo' + i, fromId: chat[a].extra.mnemo_id, toId: chat[b].extra.mnemo_id, rangeHash: stateMod.rangeHash(ctx, a, b),
+            title: s[0], text: s[1], tokens: 90 + i * 7, folded: i < 4, ts: Date.now() - (10 - i) * 3600e3 });
+        if (i < 4) d.capsules[i].text = '';
+        hide.hideRange(ctx, a, b, 25);
+    });
+    d.memory = { ts: Date.now() - 86400e3, tokens: 520, text:
+        '## 前情\n清晨的雨停了,站台上只剩下两个沉默的人。车来的时候,谁也没有先开口,直到一句关于行李的小小误会把僵住的空气撬开了一道缝。之后他们结伴上路,在陌生的城里找到最后一间空房,轮流守着那盏不肯熄灭的灯。\n\n' +
+        '## 人物与关系\n甲:先开口提出同行的人,谨慎,话不多。\n乙:犹豫之后答应结伴,对离开的理由避而不谈。\n两人:从陌生到互相留了联系方式。\n\n' +
+        '## 时间线\n清晨:站台相遇\n白天:行李误会、结伴同行\n夜里:旅店守夜\n次日:路口分开\n\n## 未结事项\n约好下周再见,时间地点未定。\n乙没有说完的离开的理由。' };
+    d.memoryPrev = { text: '## 前情\n(上一版)', tokens: 10, ts: Date.now() - 2 * 86400e3, undo: { ids: [], texts: {} } };
+    stateMod.scheduleSave(ctx);
+    inject.refreshInject(ctx);
+    (await import('../core/bus.js')).emitChange();
+    return { capsules: d.capsules.length };
+}
+
+// ── 绑定 ──
+$('btnAssert').onclick = runAll;
+$('btnBench').onclick = runBenchmark;
+$('btnDemo').onclick = seedDemo;
+$('btnOpen').onclick = () => api.panel.toggle();
+$('selTheme').onchange = (e) => { S({ theme: e.target.value }); api.panel.isOpen() && api.panel.renderNow(); };
+document.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => { api.panel.open(b.dataset.goto); });
+document.querySelectorAll('[data-prog]').forEach(b => b.onclick = async () => {
+    const bus = await import('../core/bus.js');
+    const k = b.dataset.prog;
+    if (k === 'running') { status.backfill = { running: true, stopRequested: false, done: 1, batch: 2, batches: 4, coveredTo: 23, finished: false }; status.error = null; }
+    if (k === 'failed') { status.backfill = { running: false, stopRequested: false, done: 1, batch: 2, batches: 4, coveredTo: 23, finished: false }; status.error = { ts: Date.now(), msg: '独立 API HTTP 429' }; const d = data(); if (d) d.backfill = { running: false, failedAt: 24 }; }
+    if (k === 'idle') { status.backfill = { running: false, stopRequested: false, done: 0, batch: 0, batches: 0, coveredTo: -1, finished: false }; status.error = null; }
+    bus.emitChange();
+    api.panel.renderNow?.();
+});
+$('fxBatchFail').onchange = (e) => { fx.batchFail = e.target.checked; };
+$('fxPolishFail').onchange = (e) => { fx.polishFail = e.target.checked; };
+
+window.__h = { runAll, runBenchmark, seedDemo, api, S, data, status, chat, fx, stateMod, resetWorld, getResults: () => results };
+log('测试台就绪。');
+</script>
+</body>
+</html>

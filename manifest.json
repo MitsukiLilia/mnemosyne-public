@@ -1,0 +1,9 @@
+{
+    "display_name": "Mnemosyne",
+    "loading_order": 90,
+    "js": "index.js",
+    "css": "style.css",
+    "author": "mitsuki & klaude",
+    "version": "0.1.0",
+    "description": "轻量剧情记忆:自动记录、补建历史、长期记忆、隐藏旧楼层。"
+}
