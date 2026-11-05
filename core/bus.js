@@ -7,6 +7,7 @@ export const status = {
     error: null,           // { ts, msg }
     notices: [],           // [{ ts, msg }],最多留 5 条
     generating: false,
+    lastFold: null,        // { ts, polished, reason }:最近一次折叠;polished=false 时面板提示「本次用了草稿」
 };
 
 const subs = new Set();
@@ -14,7 +15,8 @@ export function subscribe(fn) { subs.add(fn); return () => subs.delete(fn); }
 export function emitChange() { for (const fn of subs) { try { fn(); } catch (err) { console.warn('[Mnemosyne] 订阅回调失败', err); } } }
 
 export function setError(err) {
-    status.error = err ? { ts: Date.now(), msg: String(err?.message || err) } : null;
+    // 酒馆的 generateRaw 失败时可能抛出普通对象({ error: { message } }),不是 Error
+    status.error = err ? { ts: Date.now(), msg: String(err?.message || err?.error?.message || err) } : null;
     emitChange();
 }
 

@@ -2,15 +2,16 @@
 // 面板关着时不渲染、不订阅 DOM、不跑任何更新;状态变化通过 bus 订阅,开着才重绘(rAF 合并)。
 
 import { beginEvent, peekData, resolveCapsule, scheduleSave, summary } from '../core/state.js';
+import { activeAnchors, anchorLine, retiredAnchors, sectionsFromText } from '../core/memory.js';
 import { getSettings, saveSettings, DEFAULT_SETTINGS } from '../core/settings.js';
-import { status, subscribe } from '../core/bus.js';
-import { countPending, foldNowExclusive, rewriteCapsule, startBackfill, stopBackfill, kick } from '../core/recorder.js';
-import { parseSections, saveMemoryText, undoFold, unfoldedTokens } from '../core/fold.js';
+import { pushNotice, status, subscribe } from '../core/bus.js';
+import { clearSkipped, countPending, foldNowExclusive, kick, rewriteCapsule, skippedList, startBackfill, stopBackfill } from '../core/recorder.js';
+import { editableMemoryText, restoreAnchor, retireAnchor, saveMemoryText, undoFold, unfoldedTokens } from '../core/fold.js';
 import { reconcile, restoreAll } from '../core/hide.js';
 import { refreshInject } from '../core/inject.js';
 import { fetchCustomApiModels } from '../core/llm.js';
 import { textPurificationDegraded } from '../core/purify.js';
-import { SECTION_TITLES } from '../core/prompts.js';
+import { POINT_KINDS, SECTION_KEYS, SECTION_TITLES } from '../core/prompts.js';
 import * as I from './icons.js';
 
 const CSS_URL = new URL('./panel.css', import.meta.url).href;
@@ -38,7 +39,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
     let raf = 0;
     const ui = {
         expanded: new Set(), editingCap: null, editingMem: false, confirmDel: null, confirmRestore: false,
-        capLimit: 30, models: { loading: false, list: [], error: '' }, toast: '',
+        capLimit: 30, anchorLimit: 40, retiredOpen: false, models: { loading: false, list: [], error: '' }, toast: '',
     };
 
     const ctx = () => getCtx();
@@ -96,6 +97,11 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         let notes = '';
         if (status.error) {
             notes += `<section class="mn-card mn-note mn-note-err"><span class="mn-note-ico">${I.ICON_WARN}</span><div><b>最近一次失败</b><p>${esc(status.error.msg)}</p><small>${fmtTime(status.error.ts)} · 修好连接后点「${failed ? '继续补建' : '补建历史'}」或等下一条消息再试</small></div></section>`;
+        }
+        const skipped = skippedList(c);
+        if (skipped.length) {
+            const ranges = skipped.slice(0, 6).map(it => it.fi === it.ti ? `第 ${it.fi + 1} 楼` : `第 ${it.fi + 1}–${it.ti + 1} 楼`).join('、') + (skipped.length > 6 ? ` 等 ${skipped.length} 处` : '');
+            notes += `<section class="mn-card mn-note mn-note-err"><span class="mn-note-ico">${I.ICON_WARN}</span><div><b>有 ${skipped.length} 轮被模型拒绝,没有记录</b><p>${esc(ranges)}。这些楼不会被隐藏,主模型仍能看到原文;可以手动写进长期记忆,或换个模型后重试。</p><small>${esc(skipped[skipped.length - 1].reason)}</small><div class="mn-links"><button class="mn-link" data-action="retry-skipped">${I.ICON_REFRESH}<span>清除标记并重试</span></button></div></div></section>`;
         }
         if (status.backlog > 0 && !bf.running) {
             notes += `<section class="mn-card mn-note"><span class="mn-note-ico">${I.ICON_BOOK}</span><div><p>有 ${status.backlog} 轮旧对话还没有记录,自动记录不会一次处理这么多,请用下面的「补建历史」。</p></div></section>`;
@@ -164,29 +170,69 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         return html;
     }
 
+    function anchorRange(c, cap) {
+        const { fi, ti } = resolveCapsule(c, cap);
+        if (fi < 0) return '楼层缺失';
+        return fi === ti ? `#${fi + 1}` : `#${fi + 1}–${ti + 1}`;
+    }
+
+    function anchorsBlock(c, data) {
+        const list = activeAnchors(data);
+        const gone = retiredAnchors(data);
+        if (!list.length && !gone.length) return '';
+        const sorted = [];
+        for (const k of POINT_KINDS) for (const a of list) if (a.k === k) sorted.push(a);
+        const shown = sorted.slice(0, ui.anchorLimit);
+        let html = `<section class="mn-card mn-anchors"><h3>锚点<span class="mn-page-sub">${list.length} 条生效</span></h3>
+            <p class="mn-hint">折叠时由胶囊的必留点汇成,润色改不动它们。伏笔、约定始终注入,其余类别在相关词出现于最近几层时才注入。</p>`;
+        if (!list.length) html += '<p class="mn-dim">(暂无生效的锚点)</p>';
+        for (const a of shown) {
+            html += `<div class="mn-anchor"><span class="mn-tag" data-kind="${esc(a.k)}">${esc(a.k)}</span>
+                <span class="mn-anchor-main"><span class="mn-anchor-text">${esc(a.t)}</span><span class="mn-anchor-meta">${esc(anchorRange(c, a.cap))}${a.key ? ` · ${esc(a.key)}` : ''}</span></span>
+                <button class="mn-btn mn-btn-sm" data-action="retire-anchor" data-id="${esc(a.id)}">撤下</button></div>`;
+        }
+        if (sorted.length > shown.length) html += `<button class="mn-btn mn-btn-wide" data-action="more-anchors">再显示 ${Math.min(40, sorted.length - shown.length)} 条(还剩 ${sorted.length - shown.length})</button>`;
+        if (gone.length) {
+            html += `<button class="mn-link" data-action="toggle-retired" aria-expanded="${ui.retiredOpen}"><span>已撤下 ${gone.length} 条</span><span class="mn-chev${ui.retiredOpen ? ' down' : ''}">${I.ICON_CHEVRON}</span></button>`;
+            if (ui.retiredOpen) {
+                for (const a of gone.slice(0, 80)) {
+                    html += `<div class="mn-anchor mn-anchor-off"><span class="mn-tag" data-kind="${esc(a.k)}">${esc(a.k)}</span>
+                        <span class="mn-anchor-main"><span class="mn-anchor-text">${esc(a.t)}</span><span class="mn-anchor-meta">${esc(a.result)}</span></span>
+                        <button class="mn-btn mn-btn-sm" data-action="restore-anchor" data-id="${esc(a.id)}">恢复</button></div>`;
+                }
+            }
+        }
+        return html + '</section>';
+    }
+
     function memoryPage(c, s) {
         const data = peekData(c);
         const mem = data?.memory;
         const un = data ? unfoldedTokens(data) : 0;
         const busy = !!status.busy;
+        const nv = data?.versions?.length || 0;
         let html = `<div class="mn-page-head"><h2>长期记忆</h2><span class="mn-page-sub">${mem ? `${mem.text.length} 字 · ${fmtTime(mem.ts)}` : '尚未生成'}</span></div>
-        <section class="mn-card mn-row"><div class="mn-row-text"><div class="mn-row-title">未折叠的胶囊</div><div class="mn-row-sub">${un} / ${s.foldThreshold} tokens,超过后会自动折叠最早的一半</div></div></section>`;
+        <section class="mn-card mn-row"><div class="mn-row-text"><div class="mn-row-title">未折叠的胶囊</div><div class="mn-row-sub">${un} / ${s.foldThreshold} tokens,超过后会自动折叠最早的一半 · 可撤销 ${nv} 次</div></div></section>`;
+        if (status.lastFold && !status.lastFold.polished && mem) {
+            html += `<section class="mn-card mn-note"><span class="mn-note-ico">${I.ICON_WARN}</span><div><p>本次用了草稿${status.lastFold.reason ? `:${esc(status.lastFold.reason)}` : ''}</p><small>${fmtTime(status.lastFold.ts)} · 前情没有经过润色,事实和锚点完整</small></div></section>`;
+        }
         if (ui.editingMem) {
-            html += `<section class="mn-card"><textarea class="mn-textarea mn-textarea-tall" data-edit="mem" rows="16">${esc(mem?.text || SECTION_TITLES.map(t => `## ${t}\n`).join('\n'))}</textarea>
-                <p class="mn-hint">保持四个「## 标题」不变,分节显示才会正常。</p>
+            html += `<section class="mn-card"><textarea class="mn-textarea mn-textarea-tall" data-edit="mem" rows="16">${esc(mem ? editableMemoryText(mem) : SECTION_TITLES.map(t => `## ${t}\n`).join('\n'))}</textarea>
+                <p class="mn-hint">保持五个「## 标题」不变,分节显示才会正常。锚点不在这里改,请在保存后用下方列表撤下或恢复。</p>
                 <div class="mn-btn-row"><button class="mn-btn mn-btn-primary" data-action="save-mem">保存</button><button class="mn-btn" data-action="cancel-edit">取消</button></div></section>`;
-        } else if (mem?.text) {
-            const sec = parseSections(mem.text);
-            for (const t of SECTION_TITLES) {
-                html += `<section class="mn-card mn-mem-sec"><h3>${esc(t)}</h3><p>${sec[t] ? nl2br(sec[t]) : '<span class="mn-dim">(暂无)</span>'}</p></section>`;
-            }
+        } else if (mem) {
+            const sec = mem.sections || sectionsFromText(mem.text);
+            SECTION_KEYS.forEach((k, i) => {
+                html += `<section class="mn-card mn-mem-sec"><h3>${esc(SECTION_TITLES[i])}</h3><p>${sec[k] ? nl2br(sec[k]) : '<span class="mn-dim">(暂无)</span>'}</p></section>`;
+            });
+            html += anchorsBlock(c, data);
         } else {
             html += `<section class="mn-card mn-empty"><p>长期记忆还是空的。未折叠的胶囊超过阈值后会自动生成,也可以点下面的「立即折叠」。</p></section>`;
         }
         if (!ui.editingMem) {
             html += `<div class="mn-btn-row mn-btn-row-wrap">
                 <button class="mn-btn" data-action="edit-mem">${I.ICON_PEN}<span>编辑</span></button>
-                <button class="mn-btn" data-action="undo-fold" ${data?.memoryPrev ? '' : 'disabled'}>${I.ICON_UNDO}<span>撤销到上一版</span></button>
+                <button class="mn-btn" data-action="undo-fold" ${nv ? '' : 'disabled'}>${I.ICON_UNDO}<span>撤销上一次折叠${nv ? `(${nv})` : ''}</span></button>
                 <button class="mn-btn mn-btn-primary" data-action="fold-now" ${busy || !(data && data.capsules.some(x => !x.folded)) ? 'disabled' : ''}>${I.ICON_FOLD}<span>立即折叠</span></button></div>`;
         }
         return html;
@@ -213,6 +259,8 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             ${numField('reserve', '保留楼层数', s.reserve, { min: 0, max: 50, hint: '最近这几层始终保留原文,不记录、不隐藏' })}
             ${numField('foldThreshold', '折叠阈值(tokens)', s.foldThreshold, { min: 500, step: 100, hint: '未折叠胶囊合计超过它就折叠最早的一半' })}
             ${numField('batchMaxRounds', '补建每批轮数上限', s.batchMaxRounds, { min: 1, max: 40 })}
+            ${numField('maxPoints', '每个胶囊的必留点上限', s.maxPoints, { min: 0, max: 10, hint: '台词、物品、数字、称呼、约定、伏笔;0 = 不收' })}
+            ${numField('memoryVersions', '折叠版本保留数', s.memoryVersions, { min: 1, max: 10, hint: '可连续撤销的次数;链里的胶囊保留正文,挤出后才清空' })}
             <div class="mn-row"><div class="mn-row-text"><div class="mn-row-title">折叠后保留胶囊正文</div><div class="mn-row-sub">默认只留覆盖范围,省存档</div></div>${switchHtml('set-keepfolded', s.keepFoldedText, '折叠后保留胶囊正文')}</div>
             <label class="mn-field"><span class="mn-field-label">额外剔除的标签</span><input class="mn-input" type="text" data-set="excludeTags" value="${esc(s.excludeTags)}" placeholder="逗号分隔,如 status, panel" spellcheck="false"><span class="mn-hint">状态栏、面板这类块不进总结;整块连内容一起删</span></label>
         </section>
@@ -220,7 +268,9 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             <label class="mn-field"><span class="mn-field-label">位置</span>${selectHtml('injectPosition', s.injectPosition, [[1, '聊天内'], [0, '主提示词之后'], [2, '主提示词之前']])}</label>
             ${numField('injectDepth', '深度', s.injectDepth ?? '', { min: 0, max: 200, placeholder: `跟随保留楼层数(${s.reserve})`, hint: '仅「聊天内」有效;留空 = 等于保留楼层数' })}
             <label class="mn-field"><span class="mn-field-label">角色</span>${selectHtml('injectRole', s.injectRole, [[0, 'system'], [1, 'user'], [2, 'assistant']])}</label>
-            ${numField('injectBudgetPct', '预算(占上下文 %)', Math.round(s.injectBudgetRatio * 100), { min: 1, max: 80, hint: '超了先丢最旧的胶囊,长期记忆不裁' })}
+            <label class="mn-field"><span class="mn-field-label">注入方式</span>${selectHtml('injectMode', s.injectMode, [['auto', '自动'], ['macro', '宏']])}${s.injectMode === 'macro' ? '<span class="mn-hint">已不再自动注入。把 <code>{{mnemosyne}}</code> 写进预设或角色卡里想放的位置,生成时会替换成长期记忆全文。</span>' : '<span class="mn-hint">自动 = 按下面的位置/深度/角色注入</span>'}</label>
+            ${numField('anchorRecentFloors', '锚点参考的最近楼层数', s.anchorRecentFloors, { min: 1, max: 50, hint: '物品、数字、称呼、台词类锚点,相关词出现在这几层正文里才注入' })}
+            ${numField('injectBudgetPct', '预算(占上下文 %)', Math.round(s.injectBudgetRatio * 100), { min: 1, max: 80, hint: '超了先丢最旧的胶囊,再丢最旧的非伏笔锚点;分节不裁' })}
         </section>
         <section class="mn-card mn-group"><h3>生成模型</h3>
             <label class="mn-field"><span class="mn-field-label">连接</span>${selectHtml('profileId', s.profileId, [['', '跟随酒馆当前连接'], ...profiles.map(p => [p.id, p.name])])}<span class="mn-hint">指定 Connection Profile 后,记录和折叠不占用主连接</span></label>
@@ -285,6 +335,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
                 render(); const r = await startBackfill(c); if (r?.skipped) toast('有任务正在进行'); render(); return;
             }
             case 'stop': stopBackfill(); render(); return;
+            case 'retry-skipped': clearSkipped(c); pushNotice('已清除跳过标记,点「补建历史」或等下一条消息重新记录'); render(); return;
             case 'restore-hidden':
                 if (!ui.confirmRestore) { ui.confirmRestore = true; render(); setTimeout(() => { ui.confirmRestore = false; if (isOpen()) render(); }, 4000); return; }
                 ui.confirmRestore = false;
@@ -325,10 +376,18 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             }
             case 'edit-mem': ui.editingMem = true; render(); return;
             case 'save-mem': await saveMemoryText(c, root.querySelector('[data-edit="mem"]').value); ui.editingMem = false; render(); return;
-            case 'undo-fold': toast(undoFold(c) ? '已撤销到上一版' : '没有上一版'); return;
+            case 'undo-fold': {
+                const ok = undoFold(c);
+                toast(ok ? `已撤销,还可撤销 ${peekData(c)?.versions?.length || 0} 次` : '没有可撤销的折叠');
+                return;
+            }
+            case 'retire-anchor': retireAnchor(c, id); render(); return;
+            case 'restore-anchor': restoreAnchor(c, id); render(); return;
+            case 'toggle-retired': ui.retiredOpen = !ui.retiredOpen; render(); return;
+            case 'more-anchors': ui.anchorLimit += 40; render(); return;
             case 'fold-now': {
                 toast('折叠中……');
-                try { const r = await foldNowExclusive(c); toast(r?.folded ? `已折叠 ${r.folded} 个胶囊${r.polished ? '' : '(前情为草稿)'}` : '没有折叠'); }
+                try { const r = await foldNowExclusive(c); toast(r?.folded ? `已折叠 ${r.folded} 个胶囊${r.polished ? '' : '(本次用了草稿)'}` : '没有折叠'); }
                 catch (err) { toast('折叠失败:' + (err?.message || err)); }
                 render(); return;
             }
@@ -373,7 +432,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             s[key] = Number(t.value);
         } else {
             s[key] = t.value;
-            redraw = key === 'theme';
+            redraw = key === 'theme' || key === 'injectMode';
         }
         saveSettings(c);
         refreshInject(c);

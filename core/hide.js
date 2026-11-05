@@ -3,7 +3,7 @@
 // 酒馆自己的系统消息、用户手动隐藏的楼层不归本插件管:只有写进 hiddenIds 的才会被恢复。
 
 import {
-    assignFloorId, coverage, floorId, idIndex, isHiddenByUs, isStory, markHidden, unmarkHidden,
+    assignFloorId, coverage, findCapsuleCovering, floorId, idIndex, isHiddenByUs, isStory, markHidden, unmarkHidden,
     peekData, reserveBoundary, scheduleSave, setHiddenIds,
 } from './state.js';
 
@@ -64,6 +64,36 @@ export function restoreAll(ctx) {
 }
 
 /**
+ * 保留区同步(双向):
+ * ① 删楼让聊天变短后,保留区会退回到已隐藏的楼上 → 把保留区里我们藏的楼放出来;
+ * ② 之后继续聊,这些楼重新移出保留区 → 从边界往前补藏,碰到已藏或没被覆盖的正文楼就停。
+ * ①只扫保留区那几楼;②只走新移出的几楼。都与聊天总长无关。返回 { unhidden, hidden }。
+ */
+export function syncReserve(ctx, reserve) {
+    const data = peekData(ctx);
+    const out = { unhidden: 0, hidden: 0 };
+    if (!data) return out;
+    const limit = reserveBoundary(ctx, reserve);
+    for (let i = limit; i < ctx.chat.length; i++) {
+        if (unhideIndex(ctx, i)) out.unhidden++;
+    }
+    if (data.capsules.length) {
+        for (let i = limit - 1; i >= 0; i--) {
+            const m = ctx.chat[i];
+            if (!m) break;
+            if (m.is_system) {
+                if (isHiddenByUs(ctx, floorId(m))) break; // 接上已藏的部分
+                continue;                                 // 原生系统消息/用户自己藏的:跳过
+            }
+            if (!isStory(ctx, m) || !findCapsuleCovering(ctx, data, i)) break;
+            if (hideIndex(ctx, i)) out.hidden++;
+        }
+    }
+    if (out.unhidden || out.hidden) scheduleSave(ctx);
+    return out;
+}
+
+/**
  * 整理:登记在册的隐藏楼若已不在任何胶囊范围内(胶囊作废)就取消隐藏、楼已不存在就从登记里去掉;
  * withHide=true 时再把「被覆盖且在保留区之前、还没隐藏」的正文楼补隐藏(换聊天时用)。
  * O(隐藏数 · log 胶囊数),withHide 时多一遍 O(被覆盖楼层数)。返回 { unhidden, hidden }。
@@ -102,6 +132,8 @@ export function reconcile(ctx, reserve, { withHide = false } = {}) {
         for (const [a, b] of ranges) out.hidden += hideRange(ctx, a, b, limit);
         if (out.hidden) scheduleSave(ctx);
     }
+    const r = syncReserve(ctx, reserve);
+    out.unhidden += r.unhidden; out.hidden += r.hidden;
     return out;
 }
 

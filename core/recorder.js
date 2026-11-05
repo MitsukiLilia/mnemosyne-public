@@ -10,12 +10,13 @@
 import {
     assignFloorId, countTokens, coverage, ensureData, estimateTokens, fingerprint, insertCapsule,
     isStory, maxContextSize, peekData, rangeHash, reserveBoundary, resolveCapsule, scheduleSave,
-    beginEvent, summary, liveMeta,
+    beginEvent, summary, liveMeta, idIndex,
 } from './state.js';
 import { getSettings } from './settings.js';
 import { generateJson, llmOptsFrom } from './llm.js';
 import { cleanMessageText, ensureRegexEngine } from './purify.js';
-import { PROMPT_CAPSULE } from './prompts.js';
+import { capsulePrompt, POINT_KINDS } from './prompts.js';
+import { clueBlock } from './prescan.js';
 import { status, emitChange, setError } from './bus.js';
 import { foldNow, foldWhileNeeded, needsFold } from './fold.js';
 import { refreshInject } from './inject.js';
@@ -62,7 +63,7 @@ function floorCost(msg) {
 export function collectRounds(ctx, startIdx, boundary, { max = Infinity, ignoreCoverage = false } = {}) {
     const chat = ctx.chat;
     const ranges = ignoreCoverage ? [] : coverage(ctx).filter(r => r.fi >= 0 && r.ti >= r.fi)
-        .map(r => [r.fi, r.ti]).sort((a, b) => a[0] - b[0]);
+        .map(r => [r.fi, r.ti]).concat(skippedRanges(ctx)).sort((a, b) => a[0] - b[0]);
     let ri = 0;
     const rounds = [];
     let cur = null;
@@ -149,8 +150,29 @@ function buildBatchText(ctx, rounds, excludeTags) {
     }).join('\n\n');
 }
 
-/** 模型输出 → 规范化的 [{a,b,title,text}](轮号 1 起,闭区间,互不重叠,按轮号排序)。 */
-export function normalizeCapsules(parsed, n) {
+const POINT_KEY_MAX = 40;
+const POINT_TEXT_MAX = 120;
+
+/** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整个胶囊失败)。 */
+export function normalizePoints(raw, max = 5) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    const seen = new Set();
+    for (const p of raw) {
+        if (out.length >= max) break;
+        if (!p || typeof p !== 'object') continue;
+        const k = String(p.k ?? '').trim();
+        if (!POINT_KINDS.includes(k)) continue;
+        const t = String(p.t ?? '').replace(/\s+/g, ' ').trim().slice(0, POINT_TEXT_MAX);
+        if (!t || seen.has(k + t)) continue;
+        seen.add(k + t);
+        out.push({ k, t, key: String(p.key ?? '').trim().slice(0, POINT_KEY_MAX) });
+    }
+    return out;
+}
+
+/** 模型输出 → 规范化的 [{a,b,title,text,points}](轮号 1 起,闭区间,互不重叠,按轮号排序)。 */
+export function normalizeCapsules(parsed, n, maxPoints = 5) {
     const list = Array.isArray(parsed?.capsules) ? parsed.capsules : (Array.isArray(parsed) ? parsed : []);
     const used = new Set();
     const out = [];
@@ -167,15 +189,119 @@ export function normalizeCapsules(parsed, n) {
         const text = String(it?.text ?? '').trim();
         if (!text) return;
         for (let k = a; k <= b; k++) used.add(k);
-        out.push({ a, b, title: String(it?.title ?? '').trim(), text });
+        out.push({ a, b, title: String(it?.title ?? '').trim(), text, points: normalizePoints(it?.points, maxPoints) });
     });
     out.sort((x, y) => x.a - y.a);
     return out;
 }
 
+/** 必留点落库:补 id(`${胶囊id}:${序号}`)和来源楼 at(胶囊终点)。 */
+function stampPoints(cap, points) {
+    return points.map((p, i) => ({ id: `${cap.id}:${i}`, k: p.k, t: p.t, key: p.key, at: cap.toId }));
+}
+
+const maxPointsOf = (settings) => Math.max(0, Math.min(10, Math.floor(Number(settings.maxPoints) || 0)));
+
 function makeCapId() { return 'c' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3); }
 
 /** 请求 + 提交一批。返回新增胶囊数;抛错表示失败(调用方设错误状态)。 */
+// ── 失败处理:只有「像是内容被拦」才拆批 ──
+// 酒馆对自定义渠道只回传状态文字(如 Bad Request),审查拦截的细节留在服务器日志里,所以靠规则判断:
+//   hard  —— 渠道问题(鉴权/限流/5xx/断网/用户中止):直接抛出,不拆批;
+//   empty —— 空回复/解析失败:原样重试一次,再失败按 block 处理;
+//   block —— 400 或明确的拦截字样:对半拆开重试,拆到单轮仍失败就跳过这一轮。
+// 保险:连续 SKIP_STREAK_LIMIT 轮被跳过,更像是渠道或模型设置有问题 → 撤销这几条跳过并停下报错。
+
+export const SKIP_STREAK_LIMIT = 3;
+const HARD_FAIL_RE = /\b(401|403|429|5\d\d)\b|unauthori[sz]ed|forbidden|quota|rate.?limit|failed to fetch|network|ECONN|ENOTFOUND|getaddrinfo|timed? ?out|超时|Base URL|abort/i;
+const BLOCK_RE = /Bad Request|\b400\b|PROHIBITED|blocked|SAFETY|content.?filter|moderation|审核|拦截/i;
+const EMPTY_RE = /No message generated|空内容|无法解析|没有返回可用/i;
+
+export function errText(err) {
+    if (typeof err === 'string') return err.slice(0, 300);
+    const t = err?.message || err?.error?.message || (err ? JSON.stringify(err) : '');
+    return String(t || '未知错误').slice(0, 300);
+}
+export function classifyError(err) {
+    const t = errText(err);
+    if (HARD_FAIL_RE.test(t)) return 'hard';
+    if (BLOCK_RE.test(t)) return 'block';
+    if (EMPTY_RE.test(t)) return 'empty';
+    return 'hard';
+}
+
+function skippedRanges(ctx) {
+    const list = peekData(ctx)?.skipped;
+    if (!list?.length) return [];
+    const out = [];
+    for (const it of list) {
+        const fi = idIndex(ctx, it.fromId), ti = idIndex(ctx, it.toId);
+        if (fi >= 0 && ti >= fi) out.push([fi, ti]);
+    }
+    return out;
+}
+
+/** 当前仍有效的跳过记录(楼还在),面板用。 */
+export function skippedList(ctx) {
+    const list = peekData(ctx)?.skipped || [];
+    return list.map(it => ({ ...it, fi: idIndex(ctx, it.fromId), ti: idIndex(ctx, it.toId) })).filter(it => it.fi >= 0 && it.ti >= it.fi);
+}
+
+export function clearSkipped(ctx) {
+    const data = peekData(ctx);
+    if (!data?.skipped?.length) return 0;
+    const n = data.skipped.length;
+    data.skipped = [];
+    scheduleSave(ctx);
+    emitChange();
+    return n;
+}
+
+function markSkipped(ctx, round, reason) {
+    const data = ensureData(ctx);
+    if (!Array.isArray(data.skipped)) data.skipped = [];
+    const it = { fromId: assignFloorId(ctx, round.fi), toId: assignFloorId(ctx, round.ti), reason: String(reason).slice(0, 120), ts: Date.now() };
+    data.skipped.push(it);
+    status.backfill.coveredTo = Math.max(status.backfill.coveredTo, round.ti);
+    scheduleSave(ctx);
+    return it;
+}
+
+/** recordBatch 外面包一层:按上面的规则重试/拆批/跳过。run = { streak, recent } 由调用方在一次补建或一次自动记录内共用。 */
+async function recordSafely(ctx, rounds, run) {
+    let err = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const n = await recordBatch(ctx, rounds);
+            if (n) { run.streak = 0; run.recent = []; }
+            return n;
+        } catch (e) {
+            err = e;
+            const kind = classifyError(e);
+            if (kind === 'hard') throw e;
+            if (kind === 'block') break;
+        }
+    }
+    if (rounds.length > 1) {
+        const mid = Math.ceil(rounds.length / 2);
+        const a = await recordSafely(ctx, rounds.slice(0, mid), run);
+        if (!a) return 0; // 过期:整批放弃
+        const b = await recordSafely(ctx, rounds.slice(mid), run);
+        return b ? a + b : 0;
+    }
+    run.streak = (run.streak || 0) + 1;
+    if (run.streak >= SKIP_STREAK_LIMIT) {
+        const data = peekData(ctx);
+        if (data?.skipped && run.recent?.length) data.skipped = data.skipped.filter(it => !run.recent.includes(it));
+        run.recent = [];
+        throw new Error(`连续 ${run.streak} 轮被模型拒绝或返回空内容,更像是渠道或模型设置的问题,已停止(最后一次:${errText(err)})`);
+    }
+    const it = markSkipped(ctx, rounds[0], errText(err));
+    (run.recent ||= []).push(it);
+    console.warn('[Mnemosyne] 这一轮被模型拒绝,已跳过', rounds[0].fi + 1, '–', rounds[0].ti + 1, errText(err));
+    return 1;
+}
+
 async function recordBatch(ctx, rounds) {
     const settings = getSettings(ctx);
     const meta = ctx.chatMetadata;
@@ -185,11 +311,13 @@ async function recordBatch(ctx, rounds) {
 
     await ensureRegexEngine();
     const tA = performance.now();
-    const user = buildBatchText(ctx, rounds, settings.excludeTags);
+    const batchText = buildBatchText(ctx, rounds, settings.excludeTags);
+    const user = batchText + clueBlock(batchText);
     const tB = performance.now();
-    const parsed = await generateJson(ctx, PROMPT_CAPSULE, user, llmOptsFrom(settings));
+    const maxPoints = maxPointsOf(settings);
+    const parsed = await generateJson(ctx, capsulePrompt(maxPoints), user, llmOptsFrom(settings));
     const tC = performance.now();
-    const items = normalizeCapsules(parsed, rounds.length);
+    const items = normalizeCapsules(parsed, rounds.length, maxPoints);
     if (!items.length) throw new Error('模型没有返回可用的记录');
 
     // 先把所有异步的事做完(token 计数),之后的提交全在同一个 tick 内,保存只会排一次
@@ -215,8 +343,9 @@ async function recordBatch(ctx, rounds) {
         const cap = {
             id: makeCapId(), fromId: assignFloorId(ctx, fi), toId: assignFloorId(ctx, ti),
             rangeHash: rangeHash(ctx, fi, ti), // 必须在隐藏之前算:隐藏前后的正文楼集合相同,指纹一致
-            title: it.title, text: it.text, tokens: tokens[k], folded: false, ts: Date.now(),
+            title: it.title, text: it.text, tokens: tokens[k], folded: false, ts: Date.now(), points: [],
         };
+        cap.points = stampPoints(cap, it.points);
         insertCapsule(ctx, data, cap);
         hideRange(ctx, fi, ti, limit);
         status.backfill.coveredTo = Math.max(status.backfill.coveredTo, ti);
@@ -266,6 +395,7 @@ async function pump() {
     if (isGenerating()) return;                    // 等 GENERATION_ENDED 再来
     autoWanted = false;
     await runExclusive('auto', async () => {
+        const run = { streak: 0, recent: [] };
         try {
             for (let guard = 0; guard < 20; guard++) {
                 const t0 = performance.now();
@@ -276,12 +406,13 @@ async function pump() {
                 if (rounds.length > s.autoMaxRounds) { status.backlog = countPending(ctx); emitChange(); break; } // 积压太多:交给补建
                 status.backlog = 0;
                 const pack = packRounds(ctx, rounds, s)[0];
-                const added = await recordBatch(ctx, pack);
+                const added = await recordSafely(ctx, pack, run);
                 setError(null);
                 if (!added) break;
                 if (needsFold(ctx)) await foldWhileNeeded(ctx);
                 if (isGenerating()) { autoWanted = true; break; }
             }
+            if (!isGenerating() && needsFold(ctx)) await foldWhileNeeded(ctx); // 删楼回退后阈值又够了:不等新消息,直接重新折叠
         } catch (err) {
             console.warn('[Mnemosyne] 自动记录失败', err);
             setError(err); // 失败不重试轰炸:标记失败,等下一次事件或手动再试
@@ -330,6 +461,7 @@ export async function startBackfill(ctx) {
         setError(null);
         let outcome = 'stopped';
         let failIdx = null;
+        const run = { streak: 0, recent: [] };
         try {
             await ensureRegexEngine();
             for (;;) {
@@ -342,7 +474,7 @@ export async function startBackfill(ctx) {
                 bf.batches = bf.done + packs.length;
                 failIdx = packs[0][0].fi;
                 emitChange();
-                const added = await recordBatch(ctx, packs[0]);
+                const added = await recordSafely(ctx, packs[0], run);
                 if (!added) { outcome = 'stale'; break; }
                 bf.done++;
                 if (needsFold(ctx)) await foldWhileNeeded(ctx); // 攒够阈值就顺手折叠,不让胶囊堆几百个
@@ -379,14 +511,17 @@ export async function rewriteCapsule(ctx, capId) {
         const rounds = collectRounds(ctx, fi, ti + 1, { ignoreCoverage: true });
         if (!rounds.length) throw new Error('找不到对应的原文');
         await ensureRegexEngine();
-        const parsed = await generateJson(ctx, PROMPT_CAPSULE, buildBatchText(ctx, rounds, settings.excludeTags), llmOptsFrom(settings));
-        const items = normalizeCapsules(parsed, rounds.length);
+        const batchText = buildBatchText(ctx, rounds, settings.excludeTags);
+        const maxPoints = maxPointsOf(settings);
+        const parsed = await generateJson(ctx, capsulePrompt(maxPoints), batchText + clueBlock(batchText), llmOptsFrom(settings));
+        const items = normalizeCapsules(parsed, rounds.length, maxPoints);
         if (!items.length) throw new Error('模型没有返回可用的记录');
         const text = items.map(i => i.text).join('');
         const title = items[0].title;
         const tokens = await countTokens(ctx, title ? `${title}:${text}` : text);
         if (!data.capsules.includes(cap)) return { skipped: 'stale' };
         cap.text = text; cap.title = title; cap.tokens = tokens; cap.ts = Date.now();
+        cap.points = stampPoints(cap, normalizePoints(items.flatMap(i => i.points), maxPoints));
         scheduleSave(ctx);
         refreshInject(ctx);
         return { ok: true };

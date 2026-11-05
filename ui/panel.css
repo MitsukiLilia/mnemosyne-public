@@ -181,6 +181,20 @@
 .mn-mem-sec h3 { font-size: 17px; }
 .mn-mem-sec p { font-size: 15px; }
 
+/* 锚点列表 */
+.mn-anchors h3 { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.mn-anchor { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line-soft); }
+.mn-anchor-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mn-anchor-text { font-size: 15px; color: var(--text); overflow-wrap: anywhere; }
+.mn-anchor-meta { font-size: 12.5px; color: var(--text2); overflow-wrap: anywhere; }
+.mn-anchor-off .mn-anchor-text { color: var(--text2); text-decoration: line-through; text-decoration-color: var(--line); }
+.mn-tag { flex: none; min-width: 38px; text-align: center; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-alt); color: var(--accent-strong); font-size: 12.5px; }
+.mn-tag[data-kind="伏笔"], .mn-tag[data-kind="约定"] { background: var(--accent-strong); border-color: transparent; color: var(--on-btn); }
+.mn-btn-sm { min-height: 36px; padding: 0 10px; font-size: 13.5px; border-radius: 12px; }
+.mn-anchors .mn-link { margin-top: 6px; min-height: 40px; padding: 0; }
+.mn-anchors code { font-family: ui-monospace, monospace; }
+.mn-hint code { font-family: ui-monospace, monospace; color: var(--text); }
+
 /* 表单 */
 .mn-field { display: block; padding: 8px 0; }
 .mn-field-label { display: block; font-size: 14px; color: var(--text); margin-bottom: 4px; font-weight: 600; }

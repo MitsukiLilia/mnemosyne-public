@@ -15,7 +15,7 @@ import { createPanel } from './ui/panel.js';
 import { ICON_MENU } from './ui/icons.js';
 
 // 自报家门:排查「更新了却在跑旧码」时,控制台比对版本号即知真伪。
-export const MNEMO_VERSION = '0.1.0';
+export const MNEMO_VERSION = '0.2.0';
 globalThis.__MNEMO_VERSION = MNEMO_VERSION;
 console.info(`[Mnemosyne] v${MNEMO_VERSION} 已加载`);
 
@@ -36,17 +36,18 @@ let fab = null;
 // ── 校验结果的统一收尾 ──
 // 只做:取消失效胶囊的隐藏、提示、重算注入、排一次保存、催自动记录重新记。
 function handleVerify(ctx, res, label) {
-    if (!res.changed) return;
+    if (!res.changed) { inject.refreshInject(ctx); return; } // 没坏也要重算:锚点筛选依赖最近几楼
     const s = getSettings(ctx);
     beginEvent(ctx);
     hide.reconcile(ctx, s.reserve);
     if (res.invalidated.length) {
         pushNotice(`${label},对应记录已作废,将重新记录`);
     }
-    if (res.foldedTouched.length) {
+    if (res.foldedTouched.length && !res.rolledBack && !res.pointsDropped) {
         const n = res.foldedTouched[0] + 1;
         pushNotice(`第 ${Math.max(1, n)} 楼在长期记忆覆盖范围内被改动,可手动编辑长期记忆`);
     }
+    for (const msg of res.notices) pushNotice(msg);
     scheduleSave(ctx);
     inject.refreshInject(ctx);
     kick(ctx);
@@ -59,6 +60,8 @@ function onReceived() {
     if (!getSettings(ctx).enabled) return;
     beginEvent(ctx);
     noteAppend(ctx);
+    hide.syncReserve(ctx, getSettings(ctx).reserve);
+    inject.refreshInject(ctx);
     kick(ctx);
 }
 function onSent() {
@@ -66,6 +69,8 @@ function onSent() {
     if (!getSettings(ctx).enabled) return;
     beginEvent(ctx);
     noteAppend(ctx);
+    hide.syncReserve(ctx, getSettings(ctx).reserve);
+    inject.refreshInject(ctx);
 }
 function onFloorChanged(index) {
     const ctx = getCtx();
@@ -80,6 +85,7 @@ function onDeleted() {
     beginEvent(ctx);
     const point = consumeDeletePoint(ctx);
     const res = verifyAfter(ctx, point);
+    if (!res.changed) hide.reconcile(ctx, getSettings(ctx).reserve); // 胶囊都没坏也要整理:聊天变短,保留区退回到已隐藏的楼
     handleVerify(ctx, res, `第 ${point + 1} 楼附近有楼层被删除`);
 }
 function onChatChanged() {
@@ -136,7 +142,7 @@ function onSettingsChanged() {
     const ctx = getCtx();
     ensureFab();
     inject.refreshInject(ctx);
-    if (getSettings(ctx).enabled) kick(ctx);
+    if (getSettings(ctx).enabled) { hide.syncReserve(ctx, getSettings(ctx).reserve); kick(ctx); }
 }
 
 function main() {
@@ -166,6 +172,7 @@ function main() {
         item.addEventListener('click', (e) => { e.preventDefault(); panel.toggle(); });
         menu.appendChild(item);
     });
+    inject.registerMacro(ctx, getCtx);
     ensureFab();
     // 扩展在聊天已打开之后才加载时,CHAT_CHANGED 早已过去:启动时补跑一次
     if (getCtx().chatMetadata) onChatChanged();

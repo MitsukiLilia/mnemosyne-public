@@ -15,6 +15,10 @@ export const DEFAULT_SETTINGS = {
     injectDepth: null,       // null = 跟随保留楼层数
     injectRole: 0,           // 0 system / 1 user / 2 assistant
     injectBudgetRatio: 0.25,
+    injectMode: 'auto',      // 'auto' = setExtensionPrompt 自动注入;'macro' = 不自动注入,只由 {{mnemosyne}} 输出
+    maxPoints: 5,            // 每个胶囊的必留点上限
+    anchorRecentFloors: 8,   // 非伏笔/约定的锚点,key 出现在最近这几层正文里才注入
+    memoryVersions: 5,       // 折叠版本链保留几版(= 最多可连续撤销几次)
     excludeTags: '',
     profileId: '',
     customApi: { enabled: false, baseUrl: '', apiKey: '', model: '' },

@@ -5,8 +5,12 @@
 //   ③ 所有写入走 scheduleSave(),同一个 tick 内的多次改动合并成一次 saveMetadataDebounced;
 //   ④ 平时只读,不做整份深拷贝。
 
+import {
+    DATA_VERSION, estimateTokens, migrateData, rebuildText, rollbackVersions, versionIndexOf,
+} from './memory.js';
+
 export const MNEMO_KEY = 'mnemosyne';
-export const DATA_VERSION = 1;
+export { DATA_VERSION, estimateTokens };
 
 /** 测试台读取的计数器:证明「只核对该核对的」。 */
 export const stats = { capsuleChecks: 0, idMapRebuilds: 0, fullVerifies: 0, fingerprintComputes: 0, saves: 0 };
@@ -14,21 +18,31 @@ export const stats = { capsuleChecks: 0, idMapRebuilds: 0, fullVerifies: 0, fing
 // ── 数据 ──
 
 export function newData() {
-    return { v: DATA_VERSION, capsules: [], memory: null, memoryPrev: null, hiddenIds: [], backfill: null };
+    return { v: DATA_VERSION, capsules: [], memory: null, versions: [], hiddenIds: [], backfill: null };
 }
 
-/** 只读:没有就返回 null,不往没用过的聊天里写东西。 */
+/**
+ * 只读:没有就返回 null,不往没用过的聊天里写东西。
+ * 旧版数据在这里原地迁移(失败则保留原数据并返回 null,绝不清空)。
+ */
 export function peekData(ctx) {
     const d = ctx.chatMetadata?.[MNEMO_KEY];
-    return d && d.v === DATA_VERSION ? d : null;
+    if (!d || typeof d !== 'object') return null;
+    if (d.v === DATA_VERSION) return d;
+    if (!migrateData(d)) return null;
+    scheduleSave(ctx); // 迁移成功:排一次保存把新结构落盘(幂等,漏了也只是下次再迁一次)
+    return d;
 }
 
-/** 写前调用:没有就建。 */
+/** 写前调用:没有就建;有但迁不动的数据绝不覆盖,直接抛错。 */
 export function ensureData(ctx) {
     const meta = ctx.chatMetadata;
     if (!meta) throw new Error('chatMetadata 不可用');
-    if (!meta[MNEMO_KEY] || meta[MNEMO_KEY].v !== DATA_VERSION) meta[MNEMO_KEY] = newData();
-    return meta[MNEMO_KEY];
+    const cur = meta[MNEMO_KEY];
+    if (!cur) return (meta[MNEMO_KEY] = newData());
+    const d = peekData(ctx);
+    if (!d) throw new Error('这个聊天里的旧版记忆数据无法升级,已原样保留;为避免覆盖,本插件暂不在此聊天写入');
+    return d;
 }
 
 // ── 保存合并 ──
@@ -276,11 +290,36 @@ function checkCapsule(ctx, cap) {
     return { cap, status: rangeHash(ctx, fi, ti) === cap.rangeHash ? 'ok' : 'changed', fi, ti };
 }
 
-/** 事件后的统一处理入口。返回 { invalidated, foldedTouched, notices },调用方负责取消隐藏、重算注入。 */
+/**
+ * 事件后的统一处理入口。返回 { invalidated, foldedTouched, notices, rolledBack, pointsDropped, changed },
+ * 调用方负责取消隐藏、重算注入、弹通知。
+ * 已折叠胶囊被删时分两种:
+ *   ① 它在版本链里(text 还保留):长期记忆回退到吞掉它的那一版之前,之后吞进去的胶囊恢复成未折叠;
+ *   ② 它是已并成占位的老胶囊:照旧收缩范围,再把来源楼已经不存在的 points 丢掉。
+ */
 function applyChecks(ctx, results, point) {
     const data = peekData(ctx);
-    const out = { invalidated: [], foldedTouched: [], notices: [], changed: false };
+    const out = { invalidated: [], foldedTouched: [], notices: [], changed: false, rolledBack: false, pointsDropped: 0 };
     if (!data) return out;
+
+    // ① 先处理回退:被删的链内胶囊 → 取最早的那一版
+    let minJ = -1;
+    const goneIds = new Set();
+    for (const res of results) {
+        if (res.status !== 'gone' || !res.cap.folded) continue;
+        const j = versionIndexOf(data, res.cap.id);
+        if (j < 0) continue;
+        goneIds.add(res.cap.id);
+        if (minJ < 0 || j < minJ) minJ = j;
+    }
+    if (minJ >= 0) {
+        rollbackVersions(data, minJ, goneIds);
+        out.rolledBack = true;
+        out.changed = true;
+        out.notices.push('长期记忆已回退到较早版本,被删楼层之后的记录会重新整理');
+    }
+
+    // ② 其余按胶囊逐个处理(回退后恢复成未折叠的胶囊走未折叠分支:失效就作废重记)
     for (const res of results) {
         if (res.status === 'ok') continue;
         const cap = res.cap;
@@ -290,8 +329,10 @@ function applyChecks(ctx, results, point) {
             if (res.status === 'changed') {
                 cap.rangeHash = rangeHash(ctx, res.fi, res.ti); // 已折叠的不回滚,只提示
                 out.foldedTouched.push(res.fi >= 0 ? res.fi : point);
+                out.pointsDropped += pruneDeadPoints(ctx, cap);
             } else if (repairFolded(ctx, cap, res, point)) {
                 out.foldedTouched.push(point);
+                out.pointsDropped += pruneDeadPoints(ctx, cap);
             } else {
                 data.capsules.splice(k, 1);
                 out.foldedTouched.push(point);
@@ -303,7 +344,20 @@ function applyChecks(ctx, results, point) {
         out.invalidated.push(cap);
         out.changed = true;
     }
+    if (out.pointsDropped) {
+        out.notices.push('已并入长期记忆的楼层被删,相关锚点已清理,请手动检查前情');
+    }
+    if (out.rolledBack || out.pointsDropped) rebuildText(data);
     return out;
+}
+
+/** 丢掉来源楼(at)已经解析不到的 points,返回丢了几条。 */
+function pruneDeadPoints(ctx, cap) {
+    if (!Array.isArray(cap.points) || !cap.points.length) return 0;
+    const keep = cap.points.filter(p => !p.at || idIndex(ctx, p.at) >= 0);
+    const n = cap.points.length - keep.length;
+    if (n) cap.points = keep;
+    return n;
 }
 
 /** 已折叠胶囊的端点被删:能修就修(收缩到幸存的楼),修不了返回 false 交调用方移除。 */
@@ -358,18 +412,7 @@ export function verifyAll(ctx) {
     return applyChecks(ctx, data.capsules.slice().map(cap => checkCapsule(ctx, cap)), 0);
 }
 
-// ── token 估算(预算用,同步、O(长度)) ──
-// 中日韩字符约 1 token/字,其余约 4 字符/token。精确计数留给写入时的 getTokenCountAsync。
-
-export function estimateTokens(text) {
-    const s = String(text || '');
-    let cjk = 0;
-    for (let i = 0; i < s.length; i++) {
-        const c = s.charCodeAt(i);
-        if ((c >= 0x3000 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xffef) || (c >= 0xac00 && c <= 0xd7af)) cjk++;
-    }
-    return Math.ceil(cjk + (s.length - cjk) / 4);
-}
+// ── token 估算:见 memory.js 的 estimateTokens ──
 
 export async function countTokens(ctx, text) {
     try {
@@ -406,7 +449,7 @@ export function reserveBoundary(ctx, reserve) {
 
 export function summary(ctx) {
     const data = peekData(ctx);
-    if (!data) return { capsules: 0, unfolded: 0, memoryChars: 0, hidden: 0, coveredTo: -1 };
+    if (!data) return { capsules: 0, unfolded: 0, memoryChars: 0, hidden: 0, coveredTo: -1, versions: 0 };
     const caps = data.capsules;
     let coveredTo = -1;
     if (caps.length) coveredTo = idIndex(ctx, caps[caps.length - 1].toId);
@@ -414,6 +457,7 @@ export function summary(ctx) {
         capsules: caps.length,
         unfolded: caps.filter(c => !c.folded).length,
         memoryChars: (data.memory?.text || '').length,
+        versions: data.versions.length,
         hidden: data.hiddenIds.length,
         coveredTo,
     };
