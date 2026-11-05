@@ -19,6 +19,7 @@ export const ICON_PLAY = S('<path d="M8 5.5v13l10-6.5-10-6.5Z"/>');
 export const ICON_EYE = S('<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/>');
 export const ICON_WARN = S('<path d="M12 4 3 19.5h18L12 4Z"/><path d="M12 10v4.5M12 17v.2"/>');
 export const ICON_CHECK = S('<path d="M4.5 12.5l5 5L19.5 6.5"/>', 'stroke-width="2"');
+export const ICON_RETIRE = S('<circle cx="12" cy="12" r="8"/><path d="M8.5 12h7"/>');
 export const ICON_FOLD = S('<path d="M5 8l7 4 7-4"/><path d="M5 13l7 4 7-4"/><path d="M12 3v5"/>');
 
 // 装饰件(占位线稿,后续会换成烧制素材;class 名是换素材的挂点)

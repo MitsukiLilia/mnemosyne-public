@@ -42,8 +42,21 @@ function stripReasoning(ctx, text) {
     return text;
 }
 
+/** 「额外剔除标签」文本 → 合法标签名数组(去重,保序)。 */
+export function parseExcludeTags(excludeTags) {
+    const out = [];
+    for (const t0 of String(excludeTags || '').split(/[,，\s]+/)) {
+        const t = t0.trim().replace(/^<|>$/g, '');
+        if (/^[\p{L}_][\p{L}\p{N}_-]*$/u.test(t) && !out.includes(t)) out.push(t);
+    }
+    return out;
+}
+
+/** 测试台用:注入假的正则引擎({ get, place })。 */
+export function setRegexEngineForTest(eng) { regexEngine = eng; }
+
 function dropExcludedTags(text, excludeTags) {
-    const tags = String(excludeTags || '').split(/[,，\s]+/).map(t => t.trim().replace(/^<|>$/g, '')).filter(t => /^[A-Za-z_][\w-]*$/.test(t));
+    const tags = parseExcludeTags(excludeTags);
     let s = text;
     for (const t of tags) {
         s = s.replace(new RegExp(`<${t}(?:\\s[^>]*)?>[\\s\\S]*?</${t}>`, 'gi'), '');
@@ -55,13 +68,18 @@ function stripHtml(text) {
     return String(text || '').replace(/<[^>]+>/g, '').trim();
 }
 
-/** 一条消息 → 干净正文。depth 同酒馆语义:距末尾的层数(末层 = 0)。 */
+/**
+ * 一条消息 → 干净正文。depth 同酒馆语义:距末尾的层数(末层 = 0)。
+ * 送给正则引擎的深度固定压成 ≤1:有些预设带「只保留最近若干楼正文、更早的只发摘要」这类按深度生效的提示词正则,
+ * 补建老楼时若按真实深度走,拿到的只剩被压缩后的摘要,正文和台词全丢。压成 1 后,不分深度的剔除规则照常生效,
+ * 而「最近 N 楼(N≥2)」这类规则不会触发。
+ */
 export function cleanMessageText(ctx, msg, depth, excludeTags) {
     let s = String(msg?.mes || '');
     if (regexEngine) {
         try {
             s = regexEngine.get(s, msg?.is_user ? regexEngine.place.USER_INPUT : regexEngine.place.AI_OUTPUT,
-                { isPrompt: true, depth });
+                { isPrompt: true, depth: Math.min(Number(depth) || 0, 1) });
         } catch (err) {
             console.warn('[Mnemosyne] 正则执行失败,本楼跳过正则', err);
         }

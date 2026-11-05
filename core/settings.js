@@ -18,7 +18,9 @@ export const DEFAULT_SETTINGS = {
     injectMode: 'auto',      // 'auto' = setExtensionPrompt 自动注入;'macro' = 不自动注入,只由 {{mnemosyne}} 输出
     maxPoints: 5,            // 每个胶囊的必留点上限
     anchorRecentFloors: 8,   // 非伏笔/约定的锚点,key 出现在最近这几层正文里才注入
-    memoryVersions: 5,       // 折叠版本链保留几版(= 最多可连续撤销几次)
+    memoryVersions: 5,
+    timelineInjectLines: 15, // 时间线只注入最近这么多条(更早的交给前情);0 = 全量       // 折叠版本链保留几版(= 最多可连续撤销几次)
+    injectWarnTokens: 12000, // 上次注入超过它,首页的注入卡片标黄
     excludeTags: '',
     profileId: '',
     customApi: { enabled: false, baseUrl: '', apiKey: '', model: '' },

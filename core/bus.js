@@ -3,6 +3,7 @@
 export const status = {
     busy: null,            // null | 'auto' | 'backfill' | 'rewrite' | 'fold'
     backfill: { running: false, stopRequested: false, done: 0, batch: 0, batches: 0, coveredTo: -1, finished: false },
+    extract: { extracted: 0, llm: 0 }, // 提取模式的本次统计:直接提取了几轮、用 LLM 补记了几轮
     backlog: 0,            // 自动记录发现的未记录轮数(超出自动处理上限时,交给补建)
     error: null,           // { ts, msg }
     notices: [],           // [{ ts, msg }],最多留 5 条

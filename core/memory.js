@@ -65,6 +65,47 @@ export function cloneMemory(mem) {
 
 export const pointId = (cap, i) => `${cap.id}:${i}`;
 
+const POINT_KEY_MAX = 40;
+const POINT_TEXT_MAX = 120;
+
+/** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整个胶囊失败)。 */
+export function normalizePoints(raw, max = 5) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    const seen = new Set();
+    for (const p of raw) {
+        if (out.length >= max) break;
+        if (!p || typeof p !== 'object') continue;
+        const k = String(p.k ?? '').trim();
+        if (!POINT_KINDS.includes(k)) continue;
+        const t = String(p.t ?? '').replace(/\s+/g, ' ').trim().slice(0, POINT_TEXT_MAX);
+        if (!t || seen.has(k + t)) continue;
+        seen.add(k + t);
+        out.push({ k, t, key: String(p.key ?? '').trim().slice(0, POINT_KEY_MAX) });
+    }
+    return out;
+}
+
+/** 人物动线条目:[{ who, t }],最多 4 条;格式不对当空。 */
+export function normalizeShifts(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const it of raw) {
+        if (out.length >= 4) break;
+        if (!it || typeof it !== 'object') continue;
+        const who = String(it.who ?? '').replace(/\s+/g, ' ').trim().slice(0, 30);
+        const t = String(it.t ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
+        if (who && t) out.push({ who, t });
+    }
+    return out;
+}
+
+/** 现场快照:字符串(数组按行拼);其他类型当空。 */
+export function normalizeNow(raw) {
+    const s = Array.isArray(raw) ? raw.map(String).join('\n') : (typeof raw === 'string' ? raw : '');
+    return s.split('\n').map(l => l.trim()).filter(Boolean).join('\n').slice(0, 400);
+}
+
 /**
  * 派生锚点:folded 胶囊(或 extraIds 里的胶囊,折叠提交前预演用)的 points 去掉 retired。
  * 返回 [{ id, k, t, key, at, cap }],顺序 = 胶囊顺序 × 序号。

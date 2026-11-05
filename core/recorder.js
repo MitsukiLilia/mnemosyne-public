@@ -15,8 +15,10 @@ import {
 import { getSettings } from './settings.js';
 import { generateJson, llmOptsFrom } from './llm.js';
 import { cleanMessageText, ensureRegexEngine } from './purify.js';
-import { capsulePrompt, POINT_KINDS } from './prompts.js';
-import { clueBlock } from './prescan.js';
+import { capsulePrompt } from './prompts.js';
+import { normalizePoints, normalizeShifts, normalizeNow } from './memory.js';
+import { extractRound, normalizeSource, sourceOf } from './extract.js';
+import { clueBlock, prescanClues } from './prescan.js';
 import { status, emitChange, setError } from './bus.js';
 import { foldNow, foldWhileNeeded, needsFold } from './fold.js';
 import { refreshInject } from './inject.js';
@@ -150,28 +152,9 @@ function buildBatchText(ctx, rounds, excludeTags) {
     }).join('\n\n');
 }
 
-const POINT_KEY_MAX = 40;
-const POINT_TEXT_MAX = 120;
+export { normalizePoints };
 
-/** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整个胶囊失败)。 */
-export function normalizePoints(raw, max = 5) {
-    if (!Array.isArray(raw)) return [];
-    const out = [];
-    const seen = new Set();
-    for (const p of raw) {
-        if (out.length >= max) break;
-        if (!p || typeof p !== 'object') continue;
-        const k = String(p.k ?? '').trim();
-        if (!POINT_KINDS.includes(k)) continue;
-        const t = String(p.t ?? '').replace(/\s+/g, ' ').trim().slice(0, POINT_TEXT_MAX);
-        if (!t || seen.has(k + t)) continue;
-        seen.add(k + t);
-        out.push({ k, t, key: String(p.key ?? '').trim().slice(0, POINT_KEY_MAX) });
-    }
-    return out;
-}
-
-/** 模型输出 → 规范化的 [{a,b,title,text,points}](轮号 1 起,闭区间,互不重叠,按轮号排序)。 */
+/** 模型输出 → 规范化的 [{a,b,title,text,points,shifts,now}](轮号 1 起,闭区间,互不重叠,按轮号排序)。 */
 export function normalizeCapsules(parsed, n, maxPoints = 5) {
     const list = Array.isArray(parsed?.capsules) ? parsed.capsules : (Array.isArray(parsed) ? parsed : []);
     const used = new Set();
@@ -189,7 +172,7 @@ export function normalizeCapsules(parsed, n, maxPoints = 5) {
         const text = String(it?.text ?? '').trim();
         if (!text) return;
         for (let k = a; k <= b; k++) used.add(k);
-        out.push({ a, b, title: String(it?.title ?? '').trim(), text, points: normalizePoints(it?.points, maxPoints) });
+        out.push({ a, b, title: String(it?.title ?? '').trim(), text, points: normalizePoints(it?.points, maxPoints), shifts: normalizeShifts(it?.shifts), now: normalizeNow(it?.now) });
     });
     out.sort((x, y) => x.a - y.a);
     return out;
@@ -346,6 +329,8 @@ async function recordBatch(ctx, rounds) {
             title: it.title, text: it.text, tokens: tokens[k], folded: false, ts: Date.now(), points: [],
         };
         cap.points = stampPoints(cap, it.points);
+        if (it.shifts.length) cap.shifts = it.shifts;
+        if (it.now) cap.now = it.now;
         insertCapsule(ctx, data, cap);
         hideRange(ctx, fi, ti, limit);
         status.backfill.coveredTo = Math.max(status.backfill.coveredTo, ti);
@@ -356,6 +341,82 @@ async function recordBatch(ctx, rounds) {
     emitChange();
     perf.recordMs += (tB - tA) + (performance.now() - tC); // 不含 LLM 等待
     return added;
+}
+
+// ── 提取模式:摘要直接取自楼层,不调用模型 ──
+// 按时间顺序处理:先取最前面一段连续同类的轮 —— 能提取的成批当场提交,取不到的交给 LLM 补记。
+
+const extractChunk = (settings) => Math.max(12, Math.floor(Number(settings.batchMaxRounds) || 12));
+
+/** rounds 前端的第一段连续同类轮。返回 { kind:'extract', items:[{round,ex}] } 或 { kind:'llm', rounds }。 */
+function nextWork(ctx, rounds, settings, source, llmMax) {
+    const maxPts = maxPointsOf(settings);
+    const chunk = extractChunk(settings);
+    const first = extractRound(ctx, rounds[0], source, maxPts);
+    if (first) {
+        const items = [{ round: rounds[0], ex: first }];
+        for (let i = 1; i < rounds.length && items.length < chunk; i++) {
+            const ex = extractRound(ctx, rounds[i], source, maxPts);
+            if (!ex) break;
+            items.push({ round: rounds[i], ex });
+        }
+        return { kind: 'extract', items };
+    }
+    const miss = [rounds[0]];
+    for (let i = 1; i < rounds.length && miss.length < llmMax; i++) {
+        if (extractRound(ctx, rounds[i], source, maxPts)) break;
+        miss.push(rounds[i]);
+    }
+    return { kind: 'llm', rounds: miss };
+}
+
+/** 线索:对这一轮提纯后的原文跑预扫,最多 6 条。 */
+function roundClues(ctx, round, excludeTags) {
+    const text = round.idxs.map(i => cleanMessageText(ctx, ctx.chat[i], 0, excludeTags)).join('\n');
+    return prescanClues(text, 6);
+}
+
+/** 提交一批提取结果。返回提交的轮数;0 = 过期(楼变了/聊天换了)。 */
+async function recordExtracted(ctx, items) {
+    const settings = getSettings(ctx);
+    const meta = ctx.chatMetadata;
+    const chat = ctx.chat;
+    const snap = items.map(({ round }) => round.idxs.map(i => ({ msg: chat[i], fp: fingerprint(chat[i]) })));
+    await ensureRegexEngine();
+    const tA = performance.now();
+    const clues = items.map(({ round }) => roundClues(ctx, round, settings.excludeTags));
+    const tokens = [];
+    for (const { ex } of items) tokens.push(await countTokens(ctx, ex.title ? `${ex.title}:${ex.text}` : ex.text));
+
+    if (liveMeta(ctx) !== meta) return 0;
+    beginEvent(ctx);
+    for (let r = 0; r < items.length; r++) {
+        for (let k = 0; k < items[r].round.idxs.length; k++) {
+            const i = items[r].round.idxs[k], sn = snap[r][k];
+            if (ctx.chat[i] !== sn.msg || fingerprint(sn.msg) !== sn.fp) return 0;
+        }
+    }
+    const data = ensureData(ctx);
+    const limit = reserveBoundary(ctx, settings.reserve);
+    items.forEach(({ round, ex }, k) => {
+        const { fi, ti } = round;
+        for (const i of round.idxs) assignFloorId(ctx, i);
+        const cap = {
+            id: makeCapId(), fromId: assignFloorId(ctx, fi), toId: assignFloorId(ctx, ti),
+            rangeHash: rangeHash(ctx, fi, ti),
+            title: ex.title, text: ex.text, tokens: tokens[k], folded: false, ts: Date.now(), points: [],
+        };
+        cap.points = stampPoints(cap, ex.points);
+        if (clues[k].length) cap.clues = clues[k];
+        insertCapsule(ctx, data, cap);
+        hideRange(ctx, fi, ti, limit);
+        status.backfill.coveredTo = Math.max(status.backfill.coveredTo, ti);
+    });
+    scheduleSave(ctx);
+    refreshInject(ctx);
+    emitChange();
+    perf.recordMs += performance.now() - tA;
+    return items.length;
 }
 
 // ── 互斥执行 ──
@@ -397,18 +458,38 @@ async function pump() {
     await runExclusive('auto', async () => {
         const run = { streak: 0, recent: [] };
         try {
-            for (let guard = 0; guard < 20; guard++) {
+            const extract = sourceOf(peekData(ctx)).mode === 'extract';
+            for (let guard = 0; guard < (extract ? 200 : 20); guard++) {
                 const t0 = performance.now();
                 const boundary = reserveBoundary(ctx, s.reserve);
-                const rounds = collectRounds(ctx, 0, boundary, { max: Math.max(1, s.autoMaxRounds) + 1 });
-                perf.planMs += performance.now() - t0; perf.plans++;
-                if (!rounds.length) { status.backlog = 0; break; }
-                if (rounds.length > s.autoMaxRounds) { status.backlog = countPending(ctx); emitChange(); break; } // 积压太多:交给补建
+                // 提取模式:能提取的轮全部当场处理,所以不限轮数;积压上限只管需要 LLM 的轮
+                const rounds = collectRounds(ctx, 0, boundary, extract ? {} : { max: Math.max(1, s.autoMaxRounds) + 1 });
+                if (!rounds.length) { perf.planMs += performance.now() - t0; perf.plans++; status.backlog = 0; break; }
+                let pack;
+                if (extract) {
+                    const w = nextWork(ctx, rounds, s, sourceOf(peekData(ctx)), s.autoMaxRounds + 1);
+                    perf.planMs += performance.now() - t0; perf.plans++;
+                    if (w.kind === 'extract') {
+                        const n = await recordExtracted(ctx, w.items);
+                        setError(null);
+                        if (!n) break;
+                        status.extract.extracted += n;
+                        if (needsFold(ctx)) await foldWhileNeeded(ctx);
+                        if (isGenerating()) { autoWanted = true; break; }
+                        continue;
+                    }
+                    if (w.rounds.length > s.autoMaxRounds) { status.backlog = countPending(ctx); emitChange(); break; }
+                    pack = packRounds(ctx, w.rounds, s)[0];
+                } else {
+                    perf.planMs += performance.now() - t0; perf.plans++;
+                    if (rounds.length > s.autoMaxRounds) { status.backlog = countPending(ctx); emitChange(); break; } // 积压太多:交给补建
+                    pack = packRounds(ctx, rounds, s)[0];
+                }
                 status.backlog = 0;
-                const pack = packRounds(ctx, rounds, s)[0];
                 const added = await recordSafely(ctx, pack, run);
                 setError(null);
                 if (!added) break;
+                if (extract) status.extract.llm += pack.length;
                 if (needsFold(ctx)) await foldWhileNeeded(ctx);
                 if (isGenerating()) { autoWanted = true; break; }
             }
@@ -437,7 +518,7 @@ export async function whenIdle(timeoutMs = 8000) {
 export function resetRecorderRuntime() {
     clearTimeout(kickTimer); kickTimer = null; autoWanted = false;
     status.backfill = { running: false, stopRequested: false, done: 0, batch: 0, batches: 0, coveredTo: -1, finished: false };
-    status.backlog = 0; status.error = null; status.notices = [];
+    status.backlog = 0; status.error = null; status.notices = []; status.extract = { extracted: 0, llm: 0 };
 }
 
 // ── 补建历史 ──
@@ -454,6 +535,7 @@ export async function startBackfill(ctx) {
     return await runExclusive('backfill', async () => {
         const data = ensureData(ctx);
         if (bf.finished) { bf.done = 0; bf.finished = false; }
+        if (bf.done === 0) status.extract = { extracted: 0, llm: 0 };
         bf.running = true; bf.stopRequested = false;
         bf.coveredTo = summary(ctx).coveredTo;
         data.backfill = { running: true, failedAt: null };
@@ -469,13 +551,34 @@ export async function startBackfill(ctx) {
                 const boundary = reserveBoundary(ctx, s.reserve);
                 const rounds = collectRounds(ctx, 0, boundary);
                 if (!rounds.length) { outcome = 'finished'; break; }
-                const packs = packRounds(ctx, rounds, s);
+                const src = sourceOf(data);
+                let pack;
                 bf.batch = bf.done + 1;
-                bf.batches = bf.done + packs.length;
-                failIdx = packs[0][0].fi;
-                emitChange();
-                const added = await recordSafely(ctx, packs[0], run);
+                if (src.mode === 'extract') {
+                    const w = nextWork(ctx, rounds, s, src, Math.max(1, s.batchMaxRounds));
+                    failIdx = rounds[0].fi;
+                    bf.batches = bf.done + Math.ceil(rounds.length / extractChunk(s));
+                    emitChange();
+                    if (w.kind === 'extract') {
+                        const n = await recordExtracted(ctx, w.items);
+                        if (!n) { outcome = 'stale'; break; }
+                        status.extract.extracted += n;
+                        bf.done++;
+                        if (needsFold(ctx)) await foldWhileNeeded(ctx);
+                        continue;
+                    }
+                    pack = packRounds(ctx, w.rounds, s)[0];
+                    bf.batches = Math.max(bf.batches, bf.done + 1);
+                } else {
+                    const packs = packRounds(ctx, rounds, s);
+                    bf.batches = bf.done + packs.length;
+                    failIdx = packs[0][0].fi;
+                    pack = packs[0];
+                    emitChange();
+                }
+                const added = await recordSafely(ctx, pack, run);
                 if (!added) { outcome = 'stale'; break; }
+                if (src.mode === 'extract') status.extract.llm += pack.length;
                 bf.done++;
                 if (needsFold(ctx)) await foldWhileNeeded(ctx); // 攒够阈值就顺手折叠,不让胶囊堆几百个
             }
@@ -513,6 +616,23 @@ export async function rewriteCapsule(ctx, capId) {
         await ensureRegexEngine();
         const batchText = buildBatchText(ctx, rounds, settings.excludeTags);
         const maxPoints = maxPointsOf(settings);
+        const src = sourceOf(data);
+        if (src.mode === 'extract') { // 提取模式:先试着重新提取,取不到才走模型
+            const exs = rounds.map(r => extractRound(ctx, r, src, maxPoints));
+            if (exs.every(Boolean)) {
+                const text = exs.map(e => e.text).join('\n');
+                const tokens = await countTokens(ctx, text);
+                if (!data.capsules.includes(cap)) return { skipped: 'stale' };
+                cap.text = text; cap.title = exs[0].title; cap.tokens = tokens; cap.ts = Date.now();
+                cap.points = stampPoints(cap, normalizePoints(exs.flatMap(e => e.points), maxPoints));
+                delete cap.shifts; delete cap.now;
+                const clues = rounds.flatMap(r => roundClues(ctx, r, settings.excludeTags)).slice(0, 6);
+                if (clues.length) cap.clues = clues; else delete cap.clues;
+                scheduleSave(ctx);
+                refreshInject(ctx);
+                return { ok: true };
+            }
+        }
         const parsed = await generateJson(ctx, capsulePrompt(maxPoints), batchText + clueBlock(batchText), llmOptsFrom(settings));
         const items = normalizeCapsules(parsed, rounds.length, maxPoints);
         if (!items.length) throw new Error('模型没有返回可用的记录');
@@ -522,10 +642,25 @@ export async function rewriteCapsule(ctx, capId) {
         if (!data.capsules.includes(cap)) return { skipped: 'stale' };
         cap.text = text; cap.title = title; cap.tokens = tokens; cap.ts = Date.now();
         cap.points = stampPoints(cap, normalizePoints(items.flatMap(i => i.points), maxPoints));
+        const shifts = normalizeShifts(items.flatMap(i => i.shifts));
+        if (shifts.length) cap.shifts = shifts; else delete cap.shifts;
+        const now = items[items.length - 1].now;
+        if (now) cap.now = now; else delete cap.now;
+        delete cap.clues;
         scheduleSave(ctx);
         refreshInject(ctx);
         return { ok: true };
     });
+}
+
+/** 改本聊天的摘要来源设置(patch 里给哪项改哪项)。 */
+export function setSource(ctx, patch) {
+    const data = ensureData(ctx);
+    data.source = normalizeSource({ ...sourceOf(data), ...patch });
+    scheduleSave(ctx);
+    if (data.source.mode === 'extract') kick(ctx, 0);
+    emitChange();
+    return data.source;
 }
 
 /** 手动立即折叠(长期记忆页的按钮)。 */

@@ -102,8 +102,15 @@ const macroReg = {};
 
 const fx = { batchFail: false, mergeFail: false, polishFail: false, garbage: false, mergePairs: false,
     calls: { batch: 0, merge: 0, polish: 0 }, onBatch: null, seen: new Map(), llmMs: 0, delay: 0,
-    seq: 0, pointsFn: null, resolveFn: null, draft: null, polishFn: null, lastBatch: '', lastMerge: '', lastSystem: '' };
+    seq: 0, pointsFn: null, resolveFn: null, draft: null, polishFn: null, lastBatch: '', lastMerge: '', lastSystem: '', lastPolish: '',
+    shiftsFn: null, nowFn: null, mergeExtra: null };
 
+function extraOf(grp) {
+    const o = {};
+    if (fx.shiftsFn) o.shifts = fx.shiftsFn(grp);
+    if (fx.nowFn) o.now = fx.nowFn(grp);
+    return o;
+}
 function fakePoints(grp) {
     if (fx.pointsFn) return fx.pointsFn(grp);
     const q = ++fx.seq;
@@ -129,10 +136,10 @@ async function generateRaw({ prompt, systemPrompt }) {
             if (fx.mergePairs) {
                 for (let i = 0; i < rounds.length; i += 2) {
                     const grp = rounds.slice(i, i + 2);
-                    caps.push({ rounds: grp.map(r => r.n), title: `记录${grp[0].n}`, text: `第${grp.map(r => r.n).join('、')}轮:` + grp.map(r => r.body.replace(/\s+/g, ' ').slice(0, 30)).join(' / '), points: fakePoints(grp) });
+                    caps.push({ rounds: grp.map(r => r.n), title: `记录${grp[0].n}`, text: `第${grp.map(r => r.n).join('、')}轮:` + grp.map(r => r.body.replace(/\s+/g, ' ').slice(0, 30)).join(' / '), points: fakePoints(grp), ...extraOf(grp) });
                 }
             } else {
-                for (const r of rounds) caps.push({ rounds: [r.n], title: `记录${r.n}`, text: `第${r.n}轮:` + r.body.replace(/\s+/g, ' ').slice(0, 40), points: fakePoints([r]) });
+                for (const r of rounds) caps.push({ rounds: [r.n], title: `记录${r.n}`, text: `第${r.n}轮:` + r.body.replace(/\s+/g, ' ').slice(0, 40), points: fakePoints([r]), ...extraOf([r]) });
             }
             return 'okay,下面是结果:\n```json\n' + JSON.stringify({ capsules: caps }) + '\n```';
         }
@@ -141,10 +148,11 @@ async function generateRaw({ prompt, systemPrompt }) {
             fx.lastMerge = prompt;
             if (fx.mergeFail) throw new Error('mock: 合并请求失败');
             const n = (prompt.match(/^\d+\. /gm) || []).length;
-            return JSON.stringify({ prelude: fx.draft ?? `草稿:合并了${n}条记录。`, people: '人物甲:与人物乙相识\n人物乙:同行', now: '地点:站台\n在场:人物甲、人物乙', timeline: '先到站\n后同行', open: '约定尚未兑现', resolved: fx.resolveFn ? fx.resolveFn(prompt) : [] });
+            return JSON.stringify({ prelude: fx.draft ?? `草稿:合并了${n}条记录。`, people: '人物甲:与人物乙相识\n人物乙:同行', now: '地点:站台\n在场:人物甲、人物乙', timeline: '先到站\n后同行', open: '约定尚未兑现', resolved: fx.resolveFn ? fx.resolveFn(prompt) : [], ...(fx.mergeExtra ? fx.mergeExtra(prompt) : {}) });
         }
         if (systemPrompt.includes('文字润色师')) {
             fx.calls.polish++;
+            fx.lastPolish = prompt;
             if (fx.polishFail) throw new Error('mock: 润色失败');
             const draft = prompt.split('【前情草稿】\n')[1] || '';
             return fx.polishFn ? fx.polishFn(draft) : '润色:' + draft;
@@ -176,6 +184,9 @@ const settingsMod = await import('../core/settings.js');
 const panelMod = await import('../ui/panel.js');
 const memMod = await import('../core/memory.js');
 const prescanMod = await import('../core/prescan.js');
+const extractMod = await import('../core/extract.js');
+const peopleMod = await import('../core/people.js');
+const purifyMod = await import('../core/purify.js');
 api.recorderConfig.kickDelay = 0;
 
 const ctxNow = () => makeCtx();
@@ -212,7 +223,7 @@ async function resetWorld(opts = {}) {
     delete extensionSettings.mnemosyne;
     counters.saves = 0; ext.last = null; ext.calls = 0;
     Object.assign(fx, { blockAll: false, blockFloor: null, emptyOnce: 0, batchFail: false, mergeFail: false, polishFail: false, garbage: false, mergePairs: false, onBatch: null, delay: 0,
-        pointsFn: null, resolveFn: null, draft: null, polishFn: null, lastBatch: '', lastMerge: '' });
+        pointsFn: null, resolveFn: null, draft: null, polishFn: null, lastBatch: '', lastMerge: '', lastPolish: '', shiftsFn: null, nowFn: null, mergeExtra: null });
     fx.calls = { batch: 0, merge: 0, polish: 0 }; fx.seen = new Map(); fx.llmMs = 0;
     S({ foldThreshold: 1e9, autoRecord: true, ...opts }); // 插件默认关自动记录(装上不擅自花 token);断言按「已开启」写,这里显式打开
     floorSeq = 0;
@@ -937,6 +948,25 @@ T('T19 被模型拒绝:拆批、只跳过那一轮、空回复重试、连续拒
     eq('T19.13 分类', [rec.classifyError({ error: { message: 'Bad Request' } }), rec.classifyError(new Error('HTTP 401')), rec.classifyError(new Error('No message generated')), rec.classifyError(new Error('Failed to fetch'))].join(','), 'block,hard,empty,hard');
 });
 
+T('T31 时间线注入只带最近 N 条', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    await loadHistory(4);
+    const d = stateMod.ensureData(ctxNow());
+    const lines = Array.from({ length: 40 }, (_, i) => `#${i + 1} 第${i + 1}个节点`).join('\n');
+    d.memory = { sections: { prelude: '前情正文', people: '', now: '', timeline: lines, open: '' }, retired: {}, text: '', tokens: 0, ts: Date.now() };
+    S({ timelineInjectLines: 15 });
+    let t = inject.buildInjection(ctxNow(), settingsMod.getSettings(ctxNow()));
+    check('T31.1 只带最近 15 条,标题注明', t.includes('#40 第40个节点') && t.includes('#26 第26个节点') && !t.includes('#25 第25个节点') && t.includes('最近 15 条,更早的见前情'), t.slice(0, 200));
+    check('T31.2 统计按截断后的长度算', inject.injectStats.last.parts.timeline < 200, inject.injectStats.last.parts.timeline);
+    S({ timelineInjectLines: 0 });
+    t = inject.buildInjection(ctxNow(), settingsMod.getSettings(ctxNow()));
+    check('T31.3 设成 0 = 全量注入,不加注明', t.includes('#1 第1个节点') && !t.includes('更早的见前情'));
+    S({ timelineInjectLines: 50 });
+    t = inject.buildInjection(ctxNow(), settingsMod.getSettings(ctxNow()));
+    check('T31.4 条数没超过上限时原样', t.includes('#1 第1个节点') && !t.includes('更早的见前情'));
+    S({ timelineInjectLines: 15 });
+});
+
 T('T17 宏模式', async () => {
     await setupCaps(8);
     const auto = ext.last.value;
@@ -959,6 +989,422 @@ T('T17 宏模式', async () => {
     eq('T17.9 没有 macros 时退回 registerMacro', inject.registerMacro({ registerMacro: (n, f, d) => calls.push([n, typeof f, d]) }, () => ctxNow()), 'registerMacro');
     check('T17.10 退路的参数', calls[0][0] === 'mnemosyne' && calls[0][1] === 'function');
     eq('T17.11 两个都没有就跳过', inject.registerMacro({}, () => ctxNow()), null);
+});
+
+// ════════ M2:摘要提取 / 人物动线 / 现场快照 / 推测 / 注入透明 ════════
+
+const tagged = (k, extra = '') => `角色的回应第${k}段:天色渐暗,街灯一盏一盏亮起来。「原话${k}」她没有回头。<abstract>旧${k}</abstract>…<abstract>事｜第${k}件事发生了<br>补充${k}</abstract>${extra}`;
+async function loadTagged(rounds, mk = tagged) {
+    for (let k = 1; k <= rounds; k++) { pushFloor(true, k); pushFloor(false, k, mk(k)); }
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'chat-' + Math.random());
+}
+function putMemory(sections) {
+    const d = stateMod.ensureData(ctxNow());
+    d.memory = { sections: { prelude: '', people: '', now: '', timeline: '', open: '', ...sections }, retired: {}, text: '', tokens: 0, ts: Date.now() };
+    memMod.rebuildText(d);
+    return d;
+}
+
+T('T20 旧数据兼容:没有 source 按自己写工作,新字段都是可选', async () => {
+    await setupCaps(8);
+    const before = JSON.parse(JSON.stringify(data()));
+    check('T20.0 前置:LLM 胶囊默认不带 clues/shifts/now,数据里没有 source', before.capsules.every(c => !('clues' in c) && !('shifts' in c) && !('now' in c)) && !('source' in before));
+    chatMetadata.mnemosyne = JSON.parse(JSON.stringify(before));
+    stateMod.resetRuntime(ctxNow());
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'v2');
+    await api.whenIdle();
+    eq('T20.1 v2 数据加载后原样(胶囊/隐藏登记)', JSON.stringify(data().capsules.map(c => c.id)) + data().hiddenIds.length, JSON.stringify(before.capsules.map(c => c.id)) + before.hiddenIds.length);
+    eq('T20.2 没有 source → 模式 llm', extractMod.sourceOf(data()).mode, 'llm');
+    const c0 = fx.calls.batch;
+    await speak(80); await speak(81); await speak(82);
+    check('T20.3 继续聊:仍走 LLM 记录', fx.calls.batch > c0 && status.extract.extracted === 0);
+    check('T20.4 无 source 时注入照常', ext.last.value.includes('<mnemosyne_memory>'));
+    // v1 小数据
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    preload(6);
+    const ctx = ctxNow(); stateMod.beginEvent(ctx);
+    const ids = [0, 1, 2, 3].map(i => stateMod.assignFloorId(ctx, i));
+    chatMetadata.mnemosyne = { v: 1, capsules: [{ id: 'o1', fromId: ids[0], toId: ids[1], rangeHash: stateMod.rangeHash(ctx, 0, 1), title: '旧', text: '旧正文', tokens: 5, folded: false, ts: 1 }],
+        memory: { text: '## 前情\n旧前情', tokens: 5, ts: 2 }, hiddenIds: [ids[0], ids[1]], backfill: null };
+    chat[0].is_system = true; chat[1].is_system = true;
+    stateMod.resetRuntime(ctxNow());
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'v1');
+    await api.whenIdle();
+    check('T20.5 v1 数据加载:胶囊/长期记忆/隐藏都在,source 缺省为 llm', data().capsules[0].text === '旧正文' && data().memory.sections.prelude === '旧前情' && data().hiddenIds.length === 2 && extractMod.sourceOf(data()).mode === 'llm');
+    eq('T20.6 normalizeSource 容错', JSON.stringify([extractMod.normalizeSource({ mode: 'x', rule: { type: 'tag', tag: '<bad' } }), extractMod.normalizeSource(null).mode]), JSON.stringify([{ mode: 'llm', rule: { type: 'tag', tag: 'abstract' }, foreshadowTag: '' }, 'llm']));
+});
+
+T('T21 提取模式:标签规则 / 取不到回退 LLM / 伏笔标签 / clues / 编辑后重新提取', async () => {
+    await resetWorld({ reserve: 3, batchMaxRounds: 12 }); S({ autoRecord: false });
+    await loadTagged(8, (k) => k === 3 ? `角色的回应第${k}段:这一轮模型漏写了摘要。` : tagged(k, `<fs>- 线索甲${k}\n- 线索乙${k}\n- 线索甲${k}</fs>`));
+    recorder.setSource(ctxNow(), { mode: 'extract', rule: { type: 'tag', tag: 'abstract' }, foreshadowTag: 'fs' });
+    await backfillAll();
+    const d = data();
+    eq('T21.1 6 轮 6 个胶囊;只有漏写的那轮调了 LLM', d.capsules.length + '/' + fx.calls.batch, '6/1');
+    check('T21.2 取最后一个 <abstract>,<br> 换成换行', d.capsules[0].text === '事｜第1件事发生了\n补充1', JSON.stringify(d.capsules[0].text));
+    eq('T21.3 标题去掉「事｜」前缀', d.capsules[0].title, '第1件事发生了');
+    check('T21.4 漏写的一轮由 LLM 补记,位置不乱', d.capsules[2].text.startsWith('第1轮:') && d.capsules[2].clues === undefined && idxOfCap(d.capsules[2]).fi === 4 && idxOfCap(d.capsules[3]).fi === 6);
+    check('T21.5 补记请求只含漏写的那轮', fx.lastBatch.includes('漏写了摘要') && !fx.lastBatch.includes('第2件事'));
+    check('T21.6 clues 存了原样摘录(含台词)', d.capsules[0].clues.length >= 1 && d.capsules[0].clues.some(x => x.includes('「原话1」')) && d.capsules[0].clues.length <= 6, JSON.stringify(d.capsules[0].clues));
+    check('T21.7 伏笔标签 → 伏笔类必留点(去重,key 空,补 id/at)', d.capsules[0].points.length === 2 && d.capsules[0].points.every((p, i) => p.k === '伏笔' && p.key === '' && p.id === `${d.capsules[0].id}:${i}` && p.at === d.capsules[0].toId) && d.capsules[0].points[0].t === '线索甲1');
+    check('T21.8 hash 与隐藏规则同 LLM 胶囊', chat[0].is_system && chat[11].is_system && !chat[12].is_system && d.capsules.every(c => c.rangeHash === stateMod.rangeHash(ctxNow(), idxOfCap(c).fi, idxOfCap(c).ti)));
+    eq('T21.9 进度统计:提取 5 轮 / LLM 补 1 轮', status.extract.extracted + '/' + status.extract.llm, '5/1');
+    check('T21.10 tokens 已计', d.capsules[0].tokens > 0);
+    // 伏笔点数量受 maxPoints 限制
+    S({ maxPoints: 1 });
+    // 编辑后作废并重新提取(不调 LLM)
+    S({ autoRecord: true });
+    const b0 = fx.calls.batch;
+    chat[1].mes = chat[1].mes.replace('补充1', '改过的补充1');
+    await eventSource.emit(eventTypes.MESSAGE_EDITED, 1);
+    await api.whenIdle();
+    check('T21.11 编辑 → 作废并立即重新提取,不调 LLM', data().capsules.length === 6 && data().capsules[0].text.includes('改过的补充1') && fx.calls.batch === b0, `${data().capsules.length} ${data().capsules[0].text}`);
+    // maxPoints
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false, maxPoints: 1 });
+    await loadTagged(5, (k) => tagged(k, `<fs>- 甲${k}\n- 乙${k}</fs>`));
+    recorder.setSource(ctxNow(), { mode: 'extract', foreshadowTag: 'fs' });
+    await backfillAll();
+    check('T21.12 伏笔点数受 maxPoints 限制', data().capsules.every(c => c.points.length === 1));
+});
+
+T('T21b 提取模式:details 规则 / 多 AI 楼拼接 / 自动记录的积压上限只管 LLM', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    const det = (k) => `开头<details><summary>别的</summary>别的内容${k}</details>正文<details><summary> 摘 要 </summary><p>摘要<b>内容${k}</b></p><details><summary>内层</summary>内层文${k}</details></details>`;
+    for (let k = 1; k <= 6; k++) {
+        pushFloor(true, k);
+        pushFloor(false, k, det(k));
+        if (k === 2) pushFloor(false, k, det('追加'));
+    }
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'd');
+    recorder.setSource(ctxNow(), { mode: 'extract', rule: { type: 'details', title: '摘要' } });
+    await backfillAll();
+    const d = data();
+    check('T21b.1 取 summary 之后的内容,忽略同楼其他折叠块,去掉 HTML', d.capsules[0].text.startsWith('摘要内容1') && !d.capsules[0].text.includes('别的内容') && !d.capsules[0].text.includes('<'), d.capsules[0].text);
+    check('T21b.2 一轮里多个 AI 楼按顺序拼接', d.capsules[1].text.includes('摘要内容2') && d.capsules[1].text.includes('摘要内容追加') && d.capsules[1].text.indexOf('内容2') < d.capsules[1].text.indexOf('内容追加'), d.capsules[1].text);
+    eq('T21b.3 全程没调 LLM', fx.calls.batch, 0);
+    // 自动记录:能提取的全部当场处理,积压上限只限制要 LLM 的轮
+    await resetWorld({ reserve: 3, autoMaxRounds: 2, autoRecord: false });
+    await loadTagged(10, (k) => (k >= 2 && k <= 6) ? `第${k}段没有摘要` : tagged(k));
+    recorder.setSource(ctxNow(), { mode: 'extract' });
+    S({ autoRecord: true });
+    recorder.kick(ctxNow(), 0); await api.whenIdle();
+    eq('T21b.4 先提取最前面能提取的 1 轮', data().capsules.length, 1);
+    check('T21b.5 随后 5 轮要 LLM > 上限 2:不调 LLM,记为积压', fx.calls.batch === 0 && status.backlog > 0, `batch=${fx.calls.batch} backlog=${status.backlog}`);
+    S({ autoMaxRounds: 10 });
+    recorder.kick(ctxNow(), 0); await api.whenIdle();
+    check('T21b.6 上限放开后:LLM 补 5 轮,其余提取,共 8 个胶囊', data().capsules.length === 8 && status.extract.llm === 5 && status.extract.extracted === 3 && fx.calls.batch >= 1, `${data().capsules.length} ${JSON.stringify(status.extract)}`);
+});
+
+T('T21c 提取模式补建时按块提交并顺手折叠(提取的胶囊折叠时补点)', async () => {
+    await resetWorld({ reserve: 3, foldThreshold: 200, batchMaxRounds: 4 }); S({ autoRecord: false });
+    await loadTagged(40);
+    recorder.setSource(ctxNow(), { mode: 'extract' });
+    const r = await backfillAll();
+    const d = data();
+    check('T21c.1 补建完成,全部 38 轮都提取,没调记录 LLM', r.outcome === 'finished' && d.capsules.length === 38 && fx.calls.batch === 0 && status.extract.extracted === 38, `${r.outcome} ${d.capsules.length}`);
+    check('T21c.2 中途按阈值折叠过(胶囊折叠、版本链有内容)', fx.calls.merge > 0 && d.capsules.some(c => c.folded) && d.versions.length > 0, `merge=${fx.calls.merge}`);
+    eq('T21c.3 范围连续:最后一个胶囊覆盖到第 76 楼', idxOfCap(d.capsules[d.capsules.length - 1]).ti, 75);
+});
+
+T('T22 检测:只扫最新 AI 楼,列出全部标签', async () => {
+    await resetWorld({ reserve: 3 });
+    pushFloor(true, 1); pushFloor(false, 1, '<old>旧楼的标签</old>');
+    pushFloor(true, 2);
+    const mes = '<think>想了想</think>正文<content>一段正文内容</content><a>x</a><abstract>' + '长'.repeat(100) + '</abstract><a>y</a><br><details><summary> 标题  一 </summary>折叠里的内容</details><details><summary>标题一</summary>第二个同名</details>';
+    pushFloor(false, 2, mes);
+    pushFloor(true, 3);
+    const r = extractMod.detectCandidates(ctxNow());
+    eq('T22.1 取最新一个 AI 楼(跳过结尾的用户楼)', r.floor, 3);
+    eq('T22.2 标签全部列出、去重、保序;details/summary 不当普通标签', r.tags.map(t => t.tag).join(), 'think,content,a,abstract,br');
+    check('T22.3 折叠块合成一个候选(标题去空白)', r.details.length === 1 && r.details[0].title === '标题一', JSON.stringify(r.details));
+    eq('T22.4 预览取内容,最多 60 字', r.tags.find(t => t.tag === 'abstract').preview, '长'.repeat(60));
+    check('T22.5 预览:普通标签/折叠块', r.tags[1].preview === '一段正文内容' && r.details[0].preview === '第二个同名', JSON.stringify([r.tags[1], r.details[0]]));
+    check('T22.6 没有 AI 楼时返回 -1', (() => { chat.length = 0; return extractMod.detectCandidates(ctxNow()).floor === -1; })());
+    check('T22.7 提取规则不认的标签名被忽略', extractMod.extractFromMes('<a b>x</a b>', { type: 'tag', tag: 'a b' }) === '' && extractMod.lastTagContent('<x>1</x><x>2</x>', 'x') === '2');
+});
+
+T('T23 折叠补必留点:台词必须原样出自线索', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    await loadTagged(7);
+    recorder.setSource(ctxNow(), { mode: 'extract' });
+    await backfillAll();
+    const caps = data().capsules;
+    check('T23.0 前置:提取胶囊没有必留点、有 clues', caps.length === 5 && caps.every(c => c.points.length === 0 && c.clues.length > 0));
+    const good = caps[0].clues.find(x => x.includes('原话1'));
+    fx.mergeExtra = () => ({ newPoints: [
+        { cap: 1, k: '台词', t: good }, { cap: 1, k: '台词', t: '线索里根本没有的话' }, { cap: 2, k: '物品', t: '某件物品', key: '物件' },
+        { cap: 9, k: '物品', t: '序号越界' }, { cap: 1, k: '乱类', t: '类别不认识' }, { cap: 3, k: '物品', t: '不在这一批里' },
+    ] });
+    await recorder.foldNowExclusive(ctxNow());
+    check('T23.1 合并请求带上了待补胶囊的线索', fx.lastMerge.includes('【需要补必留点的记录线索】') && fx.lastMerge.includes('【序号1】') && fx.lastMerge.includes(good) && fx.lastMerge.includes('newPoints') === false, fx.lastMerge.slice(0, 300));
+    const d = data();
+    check('T23.2 原样的台词写进胶囊(补 id/at)', d.capsules[0].points.length === 1 && d.capsules[0].points[0].t === good && d.capsules[0].points[0].id === `${d.capsules[0].id}:0` && d.capsules[0].points[0].at === d.capsules[0].toId, JSON.stringify(d.capsules[0].points));
+    check('T23.3 不在线索里的台词、越界序号、坏类别、不在本批的都丢掉', d.capsules[1].points.length === 1 && d.capsules[1].points[0].k === '物品' && d.capsules[2].points.length === 0, JSON.stringify(d.capsules.map(c => c.points.length)));
+    {
+        const cap = { id: 'q', clues: ['他说「明天一定会来接你」然后走了'], points: [] };
+        const r = fold.normalizeNewPoints([
+            { cap: 1, k: '台词', t: '甲:「明天一定会来接你」' }, { cap: 1, k: '台词', t: '甲:「明天绝对不来」' }, { cap: 1, k: '台词', t: '甲:明天一定会来接你' },
+        ], [cap], 5).get(cap) || [];
+        check('T23.6 台词带说话人前缀也认:只核对引号里的原话', r.length === 2 && r.every(x => x.t.includes('明天一定会来接你')), JSON.stringify(r));
+    }
+    const anchors = memMod.activeAnchors(d);
+    check('T23.4 锚点由新点派生,出现在长期记忆全文里', anchors.length === 2 && d.memory.text.includes('某件物品') && d.memory.text.includes(good));
+    // 提交失败时撤回临时挂上的点
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    await loadTagged(8); recorder.setSource(ctxNow(), { mode: 'extract' }); await backfillAll();
+    fx.mergeExtra = () => ({ newPoints: [{ cap: 1, k: '物品', t: '会被撤回' }] });
+    fx.onBatch = null;
+    const orig = fx.polishFn; fx.polishFn = () => { chat.length = 0; return '润色'; }; // 润色期间聊天被清掉 → 提交前核对失败
+    const meta0 = chatMetadata;
+    const p = recorder.foldNowExclusive(ctxNow());
+    await p.catch(() => {});
+    fx.polishFn = orig;
+    check('T23.5 未提交的折叠不留下临时点(要么整批提交要么原样)', data() ? (data().capsules[0].folded || data().capsules[0].points.length === 0) : true);
+    void meta0;
+});
+
+T('T24 人物动线:shifts/now 入库、### 解析、楼号校验', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    fx.shiftsFn = (grp) => grp[0].n % 2 ? Array.from({ length: 6 }, (_, i) => ({ who: `人${i}`, t: `从甲到乙${i}` })).concat([{ who: '', t: '无名' }, 'bad']) : '不是数组';
+    fx.nowFn = (grp) => grp[0].n % 2 ? `地点:站台${grp[0].n}\n在场:人甲` : { 乱: 1 };
+    await loadHistory(12); await backfillAll();
+    const d = data();
+    check('T24.1 shifts 最多 4 条、格式不对当空,胶囊本身不受影响', d.capsules.length === 10 && d.capsules[0].shifts.length === 4 && d.capsules[1].shifts === undefined && d.capsules[0].shifts[0].who === '人0', JSON.stringify(d.capsules.slice(0, 2).map(c => c.shifts)));
+    check('T24.2 now 存下;格式不对当空', d.capsules[0].now.startsWith('地点:站台') && d.capsules[1].now === undefined);
+    fx.mergeExtra = () => ({ people: '### 人甲／人乙\n倾向:在A时倾向B,但C除外\n当前:想要某事\n来由:#2 起因 → 从冷淡变热络;#23 假事件 → x;#999 乱写 → y\n\n### 人丙(丁)\n倾向:对人甲戒备\n当前:无\n来由:#4 某事 → 变' });
+    await recorder.foldNowExclusive(ctxNow());
+    check('T24.3 合并请求带上 shifts', fx.lastMerge.includes('【这批记录的人物变化】') && fx.lastMerge.includes('人0:从甲到乙0') && fx.lastMerge.includes('【序号1】'), fx.lastMerge.slice(0, 400));
+    const ppl = data().memory.sections.people;
+    check('T24.4 来由里越界/不在任何胶囊范围的楼号去掉,那条来由保留', ppl.includes('#2 起因') && !ppl.includes('#23') && !ppl.includes('#999') && ppl.includes('假事件 → x') && ppl.includes('乱写 → y') && ppl.includes('#4 某事'), ppl);
+    const blocks = peopleMod.parsePeople(ppl);
+    check('T24.5 按 ### 解析,标题里的别名都算本人', blocks.length === 2 && blocks[0].names.join() === '人甲,人乙' && blocks[1].names.join() === '人丙,丁' && blocks[0].raw.includes('当前:想要某事'), JSON.stringify(blocks));
+    const legacy = peopleMod.parsePeople('人甲：与人乙相识\n人乙:同行\n续行内容\n\n人丙：独来独往');
+    check('T24.6 兼容旧格式:每行「名字:……」一块,无冒号的续行并入上一块', legacy.length === 3 && legacy[1].names[0] === '人乙' && legacy[1].raw.includes('续行内容'), JSON.stringify(legacy));
+    eq('T24.7 空文本/无人名 → 无块', peopleMod.parsePeople('').length + peopleMod.parsePeople('没有冒号的一句话').length, 0);
+    eq('T24.8 sanitizeOrigins 只改来由行', peopleMod.sanitizeOrigins('当前:#999 保留\n来由:#999 x;#3–40 y;#5 z', n => n <= 20), '当前:#999 保留\n来由:x;y;#5 z');
+});
+
+T('T24b 注入人物:只带在场和最近提到的,超过 8 个按最近提到取', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    preload(6);
+    const names = ['人甲', '人乙', '人丙', '人丁', '人戊', '人己', '人庚', '人辛', '人壬', '人癸'];
+    const blockText = (list) => list.map(n => `### ${n}\n倾向:对${n}的倾向\n当前:${n}的当前\n来由:#1 事 → 变`).join('\n');
+    const lastAi = () => chat[chat.length - 1];
+    putMemory({ people: blockText(names.slice(0, 3)), now: '地点:站台\n在场:人甲' });
+    lastAi().mes = '她想起了人丙。';
+    inject.refreshInject(ctxNow());
+    let v = ext.last.value, st = inject.injectStats.last;
+    check('T24b.1 在场的 + 最近提到的注入,其余不注入', v.includes('### 人甲') && v.includes('### 人丙') && !v.includes('### 人乙') && st.peopleIn.join() === '人甲,人丙' && st.peopleOut === 1, st.peopleIn.join());
+    check('T24b.2 节标题下附惯性方向说明', v.includes('## 人物与关系\n以下是人物此刻的惯性方向') && v.includes('旧状态不代表现在仍然持续'));
+    // 超过 8 个:没人在场,按最近一次被提到的先后取前 8
+    putMemory({ people: blockText(names) });
+    lastAi().mes = names.join('、');
+    inject.refreshInject(ctxNow());
+    st = inject.injectStats.last;
+    check('T24b.3 10 人都被提到:取最近提到的 8 个,保持原顺序', st.peopleIn.join() === names.slice(2).join() && st.peopleOut === 2, st.peopleIn.join());
+    // 在场的优先
+    putMemory({ people: blockText(names.slice(0, 9)), now: '在场:人甲' });
+    lastAi().mes = names.slice(1, 9).join('、');
+    inject.refreshInject(ctxNow());
+    st = inject.injectStats.last;
+    check('T24b.4 在场的人不被挤掉(人甲没被提到也在),最早提到的被截', st.peopleIn[0] === '人甲' && st.peopleIn.length === 8 && !st.peopleIn.includes('人乙'), st.peopleIn.join());
+    // 旧格式
+    putMemory({ people: names.slice(0, 3).map(n => `${n}:旧格式的描述`).join('\n'), now: '在场:人乙' });
+    lastAi().mes = '无关内容';
+    inject.refreshInject(ctxNow());
+    check('T24b.5 旧格式每行一人也按在场筛选', ext.last.value.includes('人乙:旧格式的描述') && !ext.last.value.includes('人甲:旧格式'));
+    // 无法解析成人物块:整段原样
+    putMemory({ people: '一段没有冒号也没有标题的自由文本', now: '' });
+    inject.refreshInject(ctxNow());
+    check('T24b.6 解析不出人物块 → 整段原样注入', ext.last.value.includes('一段没有冒号也没有标题的自由文本'));
+    // 缓存:同一 memory 对象不重复解析
+    const p0 = putMemory({ people: blockText(names.slice(0, 3)), now: '在场:人甲' });
+    inject.refreshInject(ctxNow());
+    const first = JSON.stringify(inject.injectStats.last.peopleIn);
+    inject.refreshInject(ctxNow());
+    eq('T24b.7 重复构建结果稳定', JSON.stringify(inject.injectStats.last.peopleIn), first);
+    void p0;
+});
+
+T('T25 现场快照:较新的胶囊 now 覆盖长期记忆里的当前状态', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    fx.nowFn = (grp) => `地点:新地${grp[0].n}\n在场:人甲`;
+    await loadHistory(6); await backfillAll();
+    check('T25.0 前置:4 个胶囊都带 now', data().capsules.length === 4 && data().capsules.every(c => c.now));
+    putMemory({ now: '地点:旧地' });
+    let v = inject.refreshInject(ctxNow());
+    check('T25.1 未折叠的最新胶囊的 now 覆盖长期记忆', v.includes('## 当前状态\n地点:新地4') && !v.includes('旧地') && !v.includes('新地3'), v);
+    data().capsules.forEach(c => { c.folded = true; });
+    v = inject.refreshInject(ctxNow());
+    check('T25.2 胶囊都已折叠 → 用长期记忆里的', v.includes('地点:旧地') && !v.includes('新地'));
+    data().capsules[3].folded = false;
+    data().capsules[3].now = '';
+    v = inject.refreshInject(ctxNow());
+    check('T25.3 较新的胶囊没有 now → 仍用长期记忆', v.includes('地点:旧地'));
+    data().memory = null; data().capsules.forEach(c => { c.folded = false; });
+    v = inject.refreshInject(ctxNow());
+    check('T25.4 没有长期记忆时,快照也能单独注入', v.includes('## 当前状态\n地点:新地3'), v);
+});
+
+T('T26 推测:常驻注入并标未证实,证实/证伪时撤下', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    fx.pointsFn = () => { const q = ++fx.seq; return [{ k: '推测', t: `推测内容${q}`, key: `从不出现的词${q}` }, { k: '物品', t: `物品${q}`, key: `从不出现的物${q}` }]; };
+    await loadHistory(12); await backfillAll();
+    eq('T26.1 推测是合法类别', data().capsules[0].points.map(p => p.k).join(), '推测,物品');
+    let ids = [];
+    fx.resolveFn = (prompt) => {
+        ids = [...prompt.split('【这批记录的新锚点】')[1].matchAll(/^\[([^\]]+)\] \[推测\]/gm)].map(m => m[1]);
+        return [{ id: ids[0], result: '已证实:事实甲' }, { id: ids[1], result: '已证伪:不是那样' }];
+    };
+    await recorder.foldNowExclusive(ctxNow());
+    const d = data();
+    check('T26.2 被证实/证伪的撤下并带结果', ids.length === 5 && d.memory.retired[ids[0]] === '已证实:事实甲' && d.memory.retired[ids[1]] === '已证伪:不是那样');
+    const v = inject.refreshInject(ctxNow());
+    const left = memMod.activeAnchors(d).filter(a => a.k === '推测');
+    eq('T26.3 剩下 3 条推测生效', left.length, 3);
+    check('T26.4 推测不看关键词,始终注入,行尾标(未证实)', left.every(a => v.includes(`[推测] ${a.t}（未证实）`)) && !v.includes(ids[0]) , v.slice(-400));
+    check('T26.5 被撤下的推测不再注入;物品没提到不注入', !v.includes('推测内容1（') && !v.includes('[物品]'));
+    check('T26.6 合并请求把推测当锚点列出', fx.lastMerge.includes('[推测] 推测内容'));
+    const dd = memMod.dedupeAnchors([{ id: 'a', k: '推测', t: '甲怀疑乙在隐瞒真相', key: '隐瞒' }, { id: 'b', k: '推测', t: '丙担心丁离开这座城', key: '隐瞒' }]);
+    eq('T26.7 推测不按 key 合并(同伏笔)', Object.keys(dd).length, 0);
+});
+
+T('T27 注入统计:各部分之和 = 总数;被筛原因;宏模式也记录', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+    inject.injectStats.last = null;
+    await loadHistory(14); await backfillAll();
+    const d = data(); const c0 = d.capsules[0];
+    const mk = (i, k, t, key) => ({ id: `${c0.id}:${i}`, k, t, key, at: c0.toId });
+    c0.folded = true; c0.text = ''; c0.tokens = 0;
+    c0.points = [mk(0, '伏笔', '伏笔甲', ''), mk(1, '物品', '物品丙', '丙丙'), mk(2, '称呼', '称呼丁', '丁丁'), mk(3, '数字', '数字戊', '')];
+    for (let i = 0; i < 30; i++) c0.points.push(mk(10 + i, '数字', '数字填充' + i, ''));
+    putMemory({ prelude: '前情文字', people: '### 人甲\n倾向:x\n当前:y\n来由:z', now: '在场:人甲', timeline: '时间线', open: '未结' });
+    d.memory.retired = {}; memMod.rebuildText(d);
+    chat[chat.length - 2].mes += '丙丙';
+    inject.refreshInject(ctxNow());
+    let st = inject.injectStats.last;
+    const sum = Object.values(st.parts).reduce((a, b) => a + b, 0);
+    check('T27.1 各部分 token 之和与总数一致,键齐全', sum === st.tokens && st.tokens > 0 && inject.PART_KEYS.every(k => k in st.parts), JSON.stringify(st.parts));
+    const why = Object.fromEntries(st.anchorsOut.map(o => [o.id, o.why]));
+    check('T27.2 没提到 → recent;锚点太多且无 key → keyless', why[`${c0.id}:2`] === 'recent' && why[`${c0.id}:3`] === 'keyless' && why[`${c0.id}:12`] === 'keyless', JSON.stringify(st.anchorsOut.slice(0, 4)));
+    check('T27.3 注入了的在 anchorsIn(伏笔、提到的物品)', st.anchorsIn.includes(`${c0.id}:0`) && st.anchorsIn.includes(`${c0.id}:1`) && st.peopleIn.join() === '人甲');
+    check('T27.4 ts 与人物统计', st.ts > 0 && st.peopleOut === 0);
+    S({ injectBudgetRatio: 0.01 });
+    // 补一些带 key 且被提到的物品,让预算裁剪生效
+    for (let i = 0; i < 20; i++) c0.points.push(mk(50 + i, '物品', '物品填充' + i, '丙丙'));
+    inject.refreshInject(ctxNow());
+    st = inject.injectStats.last;
+    check('T27.5 预算裁剪的锚点原因是 budget,伏笔不被裁', st.anchorsOut.some(o => o.why === 'budget') && st.anchorsIn.includes(`${c0.id}:0`) && st.parts.prelude > 0);
+    S({ injectBudgetRatio: 0.25 });
+    // 宏模式
+    S({ injectMode: 'macro' });
+    inject.injectStats.last = null;
+    inject.refreshInject(ctxNow());
+    eq('T27.6 宏模式:自动刷新不构建 → 没有统计', inject.injectStats.last, null);
+    const txt = macroReg.mnemosyne.handler({});
+    check('T27.7 宏触发的构建也记录', inject.injectStats.last && inject.injectStats.last.tokens > 0 && txt.includes('<mnemosyne_memory>'));
+    S({ injectMode: 'auto' });
+    // 没有数据的聊天
+    await resetWorld({ reserve: 3 }); inject.injectStats.last = null;
+    eq('T27.8 空聊天不产生统计', (inject.refreshInject(ctxNow()), inject.injectStats.last), null);
+});
+
+T('T28 提纯:送给正则引擎的深度压成 ≤1', async () => {
+    const seen = [];
+    purifyMod.setRegexEngineForTest({
+        place: { USER_INPUT: 1, AI_OUTPUT: 2 },
+        // 假的「只保留最近 3 楼正文,更早只发摘要」:按 depth 判断
+        get: (s, place, o) => { seen.push(o.depth); const m = s.match(/<sum>([\s\S]*?)<\/sum>/); return (o.depth >= 3 && m) ? m[1] : s; },
+    });
+    try {
+        await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+        for (let k = 1; k <= 10; k++) { pushFloor(true, k, `用户第${k}句`); pushFloor(false, k, `正文标记${k}:她开口说了很多话<sum>预设小摘要${k}</sum>`); }
+        await eventSource.emit(eventTypes.CHAT_CHANGED, 'p');
+        await backfillAll();
+        check('T28.1 老楼送去记录的是正文而不是被压缩的小摘要', fx.lastBatch.includes('正文标记') && fx.lastBatch.includes('她开口说了很多话'), fx.lastBatch.slice(0, 200));
+        check('T28.2 引擎收到的深度都 ≤1', seen.length > 0 && Math.max(...seen) <= 1, String(Math.max(...seen)));
+        const p = await import('../core/purify.js');
+        check('T28.3 样本/预扫同样走 cleanMessageText', p.cleanMessageText(ctxNow(), chat[1], 999, '').includes('正文标记'));
+    } finally { purifyMod.setRegexEngineForTest(null); }
+});
+
+T('T29 额外剔除标签:勾选与手填同步,勾掉的不进记录和文风样本', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false, excludeTags: '' });
+    const status40 = '状态栏XYZ内容:' + '血量满格体力充沛心情不错。'.repeat(14);
+    for (let k = 1; k <= 8; k++) { pushFloor(true, k); pushFloor(false, k, aiText(k) + `\n<status>${status40}</status>\n<panel>面板PQR</panel>`); }
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'x');
+    // 对照:不剔除时状态栏会进记录文本
+    await backfillAll();
+    check('T29.0 对照:没勾选时状态栏内容进了记录文本', fx.lastBatch.includes('XYZ'));
+    // 面板里扫描、勾选
+    api.panel.open('settings');
+    const root = () => document.getElementById('mnemosyne-host').shadowRoot;
+    root().querySelector('[data-action="scan-tags"]').click();
+    await new Promise(r => setTimeout(r, 30));
+    const cb = (t) => root().querySelector(`[data-excl="${t}"]`);
+    check('T29.1 扫描列出最新 AI 楼的标签(勾选框)', !!cb('status') && !!cb('panel'));
+    cb('status').checked = true; cb('status').dispatchEvent(new Event('change', { bubbles: true }));
+    eq('T29.2 勾选写进 excludeTags', S({}).excludeTags, 'status');
+    cb('panel').checked = true; cb('panel').dispatchEvent(new Event('change', { bubbles: true }));
+    eq('T29.3 多个勾选逗号分隔', S({}).excludeTags, 'status, panel');
+    const input = root().querySelector('[data-set="excludeTags"]');
+    check('T29.4 手动输入框同步显示', input.value === 'status, panel');
+    input.value = 'panel, extra'; input.dispatchEvent(new Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 30));
+    check('T29.5 手填后勾选框跟着变(status 取消,panel 仍勾)', !cb('status').checked && cb('panel').checked && S({}).excludeTags === 'panel, extra');
+    cb('panel').checked = false; cb('panel').dispatchEvent(new Event('change', { bubbles: true }));
+    eq('T29.6 取消勾选只去掉那一项,手填的补充保留', S({}).excludeTags, 'extra');
+    cb('status').checked = true; cb('status').dispatchEvent(new Event('change', { bubbles: true }));
+    cb('panel').checked = true; cb('panel').dispatchEvent(new Event('change', { bubbles: true }));
+    api.panel.close();
+    // 之后的记录和文风样本都看不到被勾的标签
+    await resetWorld({ reserve: 3, excludeTags: 'status, panel' });
+    S({ autoRecord: false });
+    for (let k = 1; k <= 8; k++) { pushFloor(true, k); pushFloor(false, k, aiText(k) + `\n<status>${status40}</status>\n<panel>面板PQR</panel>`); }
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'y');
+    await backfillAll();
+    check('T29.7 勾掉的标签不进送去记录的文本', !fx.lastBatch.includes('XYZ') && !fx.lastBatch.includes('PQR') && fx.lastBatch.includes('角色的回应'));
+    await recorder.foldNowExclusive(ctxNow());
+    check('T29.8 也不进文风样本', fx.lastPolish.includes('文风样本') && !fx.lastPolish.includes('XYZ') && !fx.lastPolish.includes('PQR'), fx.lastPolish.slice(0, 200));
+    // 对照:不剔除时样本里会出现状态栏
+    await resetWorld({ reserve: 3, excludeTags: '' }); S({ autoRecord: false });
+    for (let k = 1; k <= 8; k++) { pushFloor(true, k); pushFloor(false, k, aiText(k) + `\n<status>${status40}</status>`); }
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'z');
+    await backfillAll(); await recorder.foldNowExclusive(ctxNow());
+    check('T29.9 对照:不剔除时样本里有状态栏', fx.lastPolish.includes('XYZ'));
+    eq('T29.10 parseExcludeTags 去重/容错', purifyMod.parseExcludeTags('a, <b>，a  c-d  e 1x').join(), 'a,b,c-d,e');
+});
+
+T('T30 面板:摘要来源与注入卡片', async () => {
+    await resetWorld({ reserve: 3 }); S({ autoRecord: false, injectWarnTokens: 50 });
+    inject.injectStats.last = null;
+    api.panel.open('home');
+    const root = () => document.getElementById('mnemosyne-host').shadowRoot;
+    check('T30.1 没注入过 → 「还没有注入过」', root().textContent.includes('还没有注入过'));
+    await loadTagged(8);
+    const click = async (sel) => { const el = root().querySelector(sel); if (!el) throw new Error('找不到 ' + sel); el.click(); await new Promise(r => setTimeout(r, 20)); };
+    check('T30.2 摘要来源默认显示「自己写」', root().textContent.includes('摘要来源') && root().textContent.includes('自己写'));
+    await click('[data-action="toggle-src"]');
+    await click('[data-action="src-mode"][data-mode="extract"]');
+    await click('[data-action="src-detect"]');
+    check('T30.3 检测列出标签候选(含预览)', !!root().querySelector('[data-action="pick-sum"][data-val="abstract"]') && root().textContent.includes('第8件事发生了'));
+    await click('[data-action="pick-sum"][data-val="br"]');
+    eq('T30.4 点候选 = 选中规则', JSON.stringify(extractMod.sourceOf(data()).rule), JSON.stringify({ type: 'tag', tag: 'br' }));
+    await click('[data-action="pick-sum"][data-val="abstract"]');
+    await click('[data-action="pick-fore"][data-val="br"]');
+    eq('T30.5 伏笔标签是另一个选择位', extractMod.sourceOf(data()).foreshadowTag, 'br');
+    check('T30.6 首页显示「从楼层提取:abstract」', root().textContent.includes('从楼层提取:abstract'));
+    await backfillAll();
+    api.panel.renderNow();
+    check('T30.7 进度文字有提取/LLM 统计', /本次提取了 6 轮,用 LLM 补记了 0 轮/.test(root().textContent), root().textContent.slice(0, 300));
+    check('T30.8 注入卡片:约 N token,偏长标警示色并给出文案', /上次注入约 \d+ token/.test(root().textContent) && !!root().querySelector('.mn-inj-warn') && root().textContent.includes('注入偏长'));
+    await click('[data-action="toggle-inj"]');
+    check('T30.9 点开看明细', root().textContent.includes('注入的人物') && root().textContent.includes('被筛掉的锚点'));
+    S({ injectWarnTokens: 1e6 }); api.panel.renderNow();
+    check('T30.10 未超线不标警示', !root().querySelector('.mn-inj-warn'));
+    for (const p of ['capsules', 'memory', 'settings']) { api.panel.goto(p); }
+    check('T30.11 其余页面能渲染', root().textContent.includes('注入偏长提醒线'));
+    api.panel.close();
 });
 
 async function runAll() {
@@ -1084,9 +1530,43 @@ async function runBenchmark() {
         Fn.push(emitMs + (api.perf.recordMs - p0) + (api.perf.planMs - q0));
     }
     out.push(`F 一轮落地到记录完成(插件自身耗时:事件处理 + 规划 + 构造请求 + 胶囊写入/隐藏/注入,LLM 等待已扣除,聊天约 ${chat.length} 楼 / ${data().capsules.length} 个胶囊):` + JSON.stringify(stat(Fn)));
+    // H2. 注入重算:20 个人物块 + 现场快照 + 300 个锚点(人物筛选与统计的开销)
+    await resetWorld({ reserve: 3, foldThreshold: 1e9 });
+    {
+        for (let k = 0; k < 500; k++) {
+            chat.push({ name: 'User', is_user: true, is_system: false, mes: `u${k}:` + filler, extra: {}, send_date: 0 });
+            chat.push({ name: 'Char', is_user: false, is_system: false, mes: `a${k}:人${k % 20}` + filler, extra: {}, send_date: 0 });
+        }
+        const c2 = ctxNow(); stateMod.beginEvent(c2);
+        const d2 = stateMod.ensureData(c2);
+        for (let i = 0; i < 100; i++) {
+            for (let k = i * 2; k <= i * 2 + 1; k++) stateMod.assignFloorId(c2, k);
+            d2.capsules.push({ id: 'h' + i, fromId: chat[i * 2].extra.mnemo_id, toId: chat[i * 2 + 1].extra.mnemo_id, rangeHash: stateMod.rangeHash(c2, i * 2, i * 2 + 1), title: 't', text: '', tokens: 0, folded: true, ts: 1,
+                points: ['物品', '数字', '推测'].map((k, j) => ({ id: `h${i}:${j}`, k, t: `第${i}条的${k}`, key: k === '推测' ? '' : `词${i}x${j}`, at: chat[i * 2 + 1].extra.mnemo_id })) });
+        }
+        d2.capsules.push({ id: 'hn', fromId: chat[990].extra.mnemo_id ?? stateMod.assignFloorId(c2, 990), toId: stateMod.assignFloorId(c2, 991), rangeHash: stateMod.rangeHash(c2, 990, 991), title: 'n', text: '近期', tokens: 5, folded: false, ts: 2, now: '地点:某处\n在场:人1、人2' });
+        const people = Array.from({ length: 20 }, (_, i) => `### 人${i}\n倾向:在A时倾向B\n当前:想要某事\n来由:#3 某事 → 变`).join('\n');
+        d2.memory = { sections: { prelude: '前情。'.repeat(100), people, now: '地点:站台', timeline: '时间线。\n'.repeat(20), open: '未结。' }, retired: {}, text: '', tokens: 0, ts: 1 };
+        memMod.rebuildText(d2);
+    }
+    const H2 = [];
+    for (let i = 0; i < 200; i++) { const t0 = performance.now(); inject.refreshInject(ctxNow()); H2.push(performance.now() - t0); }
+    out.push('H2 注入重算(20 个人物块筛选 + 现场快照 + 300 个锚点 + 统计):' + JSON.stringify(stat(H2)) + `;人物 ${inject.injectStats.last.peopleIn.length} 入 / ${inject.injectStats.last.peopleOut} 出`);
+    // I. 提取模式补建 1000 楼(500 轮,每轮含标签)
+    await resetWorld({ reserve: 3, batchMaxRounds: 12, foldThreshold: 1e9 }); S({ autoRecord: false });
+    for (let k = 0; k < 500; k++) {
+        chat.push({ name: 'User', is_user: true, is_system: false, mes: `u${k}:` + filler, extra: {}, send_date: 0 });
+        chat.push({ name: 'Char', is_user: false, is_system: false, mes: `a${k}:` + filler + `「台词${k}」<abstract>事｜第${k}件事发生了,交给了他一把钥匙。</abstract>`, extra: {}, send_date: 0 });
+    }
+    await eventSource.emit(eventTypes.CHAT_CHANGED, 'i');
+    recorder.setSource(ctxNow(), { mode: 'extract' });
+    const ti0 = performance.now();
+    await backfillAll();
+    const iMs = performance.now() - ti0;
+    out.push(`I 提取模式补建 ${chat.length} 楼:${iMs.toFixed(0)} ms,${data().capsules.length} 个胶囊,LLM 请求 ${fx.calls.batch} 次`);
     const bytes = JSON.stringify(data()).length;
     out.push(`存档体积:${data().capsules.length} 个胶囊 + 长期记忆 = ${(bytes / 1024).toFixed(1)} KB`);
-    const worst = Math.max(A.max, B.max, Dd.max, E.max, ...Hh.map(x => x), Fn.length ? Math.max(...Fn) : 0);
+    const worst = Math.max(A.max, B.max, Dd.max, E.max, ...Hh.map(x => x), ...H2, Fn.length ? Math.max(...Fn) : 0);
     out.push(`单条消息事件最大耗时(A/B/D/E/F)= ${worst.toFixed(3)} ms,目标 < 5 ms:${worst < 5 ? '通过' : '未通过'}`);
     $('bench').textContent = out.join('\n');
     return { out, A, B, D: Dd, E, C: stat(Cc), F: stat(Fn), G: stat(g), worst };
