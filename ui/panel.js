@@ -5,7 +5,7 @@ import { beginEvent, peekData, resolveCapsule, scheduleSave, summary } from '../
 import { activeAnchors, anchorLine, retiredAnchors, sectionsFromText } from '../core/memory.js';
 import { getSettings, saveSettings, DEFAULT_SETTINGS } from '../core/settings.js';
 import { pushNotice, status, subscribe } from '../core/bus.js';
-import { clearSkipped, countPending, foldNowExclusive, kick, rewriteCapsule, setSource, skippedList, startBackfill, stopBackfill } from '../core/recorder.js';
+import { clearChatData, clearSkipped, countPending, foldNowExclusive, kick, rewriteCapsule, setSource, skippedList, startBackfill, stopBackfill } from '../core/recorder.js';
 import { editableMemoryText, restoreAnchor, retireAnchor, saveMemoryText, undoFold, unfoldedTokens } from '../core/fold.js';
 import { reconcile, restoreAll } from '../core/hide.js';
 import { PART_KEYS, injectStats, refreshInject } from '../core/inject.js';
@@ -47,7 +47,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
     let page = 'home';
     let raf = 0;
     const ui = {
-        expanded: new Set(), editingCap: null, editingMem: false, confirmDel: null, confirmRestore: false,
+        expanded: new Set(), editingCap: null, editingMem: false, confirmDel: null, confirmRestore: false, confirmClear: false,
         capLimit: 30, memOpen: new Set(), anchorLimit: 40, retiredOpen: false, srcOpen: false, injOpen: false, scan: null, tagScan: null, models: { loading: false, list: [], error: '' }, toast: '',
     };
 
@@ -275,11 +275,14 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         for (const k of POINT_KINDS) for (const a of list) if (a.k === k) sorted.push(a);
         const shown = sorted.slice(0, ui.anchorLimit);
         let html = `<section class="mn-sec mn-anchors">${secHead('锚点')}<p class="mn-sec-sub">${list.length} 条生效</p>
-            <p class="mn-hint">折叠时由胶囊的必留点汇成,润色改不动它们。伏笔、约定、推测始终注入(推测会标「未证实」),其余类别在相关词出现于最近几层时才注入。</p>`;
+            <p class="mn-hint">折叠时由胶囊的必留点汇成,润色改不动它们。伏笔、约定、推测始终注入(推测会标「未证实」),其余类别在相关词出现于最近几层时才注入。物品会带上来历和现状,同一件东西会被合并成一条。</p>`;
         if (!list.length) html += '<p class="mn-dim">(暂无生效的锚点)</p>';
         for (const a of shown) {
+            const itemMeta = a.k === '物品'
+                ? `${a.d ? `<span class="mn-anchor-meta">来历 · ${esc(a.d)}</span>` : ''}${a.now?.t ? `<span class="mn-anchor-meta">现状 · ${esc(a.now.t)}${a.now.at ? ` #${a.now.at}` : ''}</span>` : ''}`
+                : '';
             html += `<div class="mn-anchor">${pearl}<span class="mn-tag" data-kind="${esc(a.k)}">${esc(a.k)}</span>${dots}
-                <span class="mn-anchor-main"><span class="mn-anchor-text">${esc(a.t)}</span><span class="mn-anchor-meta">${esc(anchorRange(c, a.cap))}${a.key ? ` · ${esc(a.key)}` : ''}</span></span>
+                <span class="mn-anchor-main"><span class="mn-anchor-text">${esc(a.t)}</span>${itemMeta}<span class="mn-anchor-meta">${esc(anchorRange(c, a.cap))}${a.key ? ` · ${esc(a.key)}` : ''}</span></span>
                 <button class="mn-mini" data-action="retire-anchor" data-id="${esc(a.id)}" aria-label="撤下" title="撤下">${I.ICON_RETIRE}</button></div>`;
         }
         if (sorted.length > shown.length) html += `<button class="mn-btn mn-btn-wide" data-action="more-anchors">再显示 ${Math.min(40, sorted.length - shown.length)} 条(还剩 ${sorted.length - shown.length})</button>`;
@@ -437,6 +440,11 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             <div class="mn-btn-row"><button class="mn-btn" data-action="fetch-models" ${models.loading ? 'disabled' : ''}>${I.ICON_REFRESH}<span>${models.loading ? '拉取中……' : '拉取模型列表'}</span></button></div>
             ${models.error ? `<p class="mn-hint mn-hint-err">${esc(models.error)}</p>` : ''}
             ${models.list.length ? `<div class="mn-models">${models.list.map(m => `<button class="mn-model${m === ca.model ? ' on' : ''}" data-action="pick-model" data-model="${esc(m)}">${esc(m)}</button>`).join('')}</div>` : ''}
+        </section>
+        <section class="mn-group">${secHead('数据')}
+            <div class="mn-field"><span class="mn-field-label">清除这个聊天的记忆</span>
+                <span class="mn-hint">删掉胶囊、长期记忆、锚点、折叠版本和补建进度,并恢复插件隐藏的楼层。聊天正文、这个聊天的「摘要来源」和设置页的所有选项(包括独立 API)都不受影响。清除后可以重新补建。</span>
+                <div class="mn-btn-row"><button class="mn-btn mn-btn-danger" data-action="clear-data" ${status.busy || !peekData(c) ? 'disabled' : ''}>${I.ICON_TRASH}<span>${ui.confirmClear ? '再点一次确认清除' : '清除数据'}</span></button></div></div>
         </section>`;
     }
 
@@ -497,6 +505,14 @@ export function createPanel({ getCtx, onSettingsChanged }) {
                 ui.confirmRestore = false;
                 { const n = restoreAll(c); toast(n ? `已恢复 ${n} 层` : '没有需要恢复的楼层'); }
                 return;
+            case 'clear-data': {
+                if (!ui.confirmClear) { ui.confirmClear = true; render(); setTimeout(() => { ui.confirmClear = false; if (isOpen()) render(); }, 4000); return; }
+                ui.confirmClear = false;
+                const r = clearChatData(c);
+                ui.expanded.clear(); ui.editingCap = null; ui.editingMem = false; ui.confirmDel = null;
+                toast(r?.skipped ? '有任务正在进行,请先停止' : `已清除${r.unhidden ? `,恢复了 ${r.unhidden} 层` : ''}`);
+                return;
+            }
             case 'toggle-cap': ui.expanded.has(id) ? ui.expanded.delete(id) : ui.expanded.add(id); ui.confirmDel = null; render(); return;
             case 'more-caps': ui.capLimit += 30; render(); return;
             case 'edit-cap': ui.editingCap = id; render(); return;

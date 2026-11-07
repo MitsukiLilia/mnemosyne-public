@@ -1,7 +1,7 @@
 // 注入:长期记忆分节 + 筛选后的锚点 + 未折叠胶囊,经 setExtensionPrompt 放进提示词(或由 {{mnemosyne}} 宏输出)。
 // 拼装顺序:前情 / 人物与关系 / 当前状态 / 时间线 / 未结事项 / 锚点 / 近期记录。
 // 人物与关系只注入在场的和最近提到的;当前状态优先用比长期记忆更新的胶囊快照;每次构建顺带记一份统计(injectStats.last)。
-// 锚点筛选:伏笔、约定、推测没了结就始终注入;其余类别只在 key 出现于最近几层正文时注入;key 为空的只在锚点总数不多时注入。
+// 锚点筛选:伏笔、约定、推测没了结就始终注入;其余类别(含物品的来历与现状)只在 key(任一别名)出现于最近几层正文时注入;key 为空的只在锚点总数不多时注入。
 // 预算超了先丢最旧的胶囊,再丢最旧的非伏笔锚点;分节不裁。
 // 每条消息事件都会重算一次,代价只与「最近 N 楼文本 + 锚点数」有关。
 
@@ -9,7 +9,7 @@ import { peekData, maxContextSize, isStory, estimateTokens } from './state.js';
 import { getSettings, effectiveDepth } from './settings.js';
 import { MEMORY_HEADER, PEOPLE_HEADER, POINT_KINDS, SECTION_KEYS, SECTION_TITLES, ANCHOR_TITLE } from './prompts.js';
 import { PEOPLE_LIMIT, parsePeople, presentLine, selectPeople } from './people.js';
-import { activeAnchors, anchorLine, asText, sectionsFromText } from './memory.js';
+import { activeAnchors, anchorLine, asText, keysOf, sectionsFromText } from './memory.js';
 
 export const INJECT_KEY = 'mnemosyne_memory';
 export const MACRO_NAME = 'mnemosyne';
@@ -21,9 +21,10 @@ export const PART_KEYS = ['prelude', 'people', 'now', 'timeline', 'open', 'ancho
 const lineCache = new WeakMap();
 function lineOf(a) {
     let hit = lineCache.get(a.p);
-    if (!hit || hit.t !== a.t || hit.k !== a.k) {
+    const sig = `${a.t}\u0001${a.d || ''}\u0001${a.now?.t || ''}`; // 物品的来历、现状变了也要重算
+    if (!hit || hit.sig !== sig || hit.k !== a.k) {
         const line = anchorLine(a) + (a.k === '推测' ? '（未证实）' : '');
-        hit = { k: a.k, t: a.t, line, tok: estimateTokens(line) + 1 };
+        hit = { k: a.k, sig, line, tok: estimateTokens(line) + 1 };
         lineCache.set(a.p, hit);
     }
     return hit;
@@ -90,12 +91,17 @@ export function selectAnchors(ctx, data, settings, rejected = null, getRecent = 
     const recentOf = getRecent || (() => recentText(ctx, Number(settings.anchorRecentFloors) || 8));
     return all.filter(a => {
         if (ALWAYS_KINDS.has(a.k)) return true;
-        if (!a.key) { if (!keyless) rejected?.push({ id: a.id, why: 'keyless' }); return keyless; }
-        let hit = memo.get(a.key);
-        if (hit === undefined) {
-            if (recent === null) recent = recentOf();
-            hit = recent.includes(a.key);
-            memo.set(a.key, hit);
+        const keys = keysOf(a);
+        if (!keys.length) { if (!keyless) rejected?.push({ id: a.id, why: 'keyless' }); return keyless; }
+        let hit = false;
+        for (const key of keys) { // 任意一个别名出现在最近文本里就算命中;memo 按单个别名缓存
+            let h = memo.get(key);
+            if (h === undefined) {
+                if (recent === null) recent = recentOf();
+                h = recent.includes(key);
+                memo.set(key, h);
+            }
+            if (h) { hit = true; break; }
         }
         if (!hit) rejected?.push({ id: a.id, why: 'recent' });
         return hit;

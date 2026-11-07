@@ -67,6 +67,22 @@ export const pointId = (cap, i) => `${cap.id}:${i}`;
 
 const POINT_KEY_MAX = 40;
 const POINT_TEXT_MAX = 120;
+const POINT_ORIGIN_MAX = 120; // 物品的来历 d
+const ALIAS_MAX = 3;
+export const ITEM_KIND = '物品';
+export const ITEM_NOW_MAX = 60;
+
+/** key 可以用「/」写最多 3 个别名;拆分、去空、去重。入参可以是锚点、点或 key 字符串。 */
+export function keysOf(a) {
+    const raw = typeof a === 'string' ? a : a?.key;
+    const out = [];
+    for (const part of String(raw ?? '').split('/')) {
+        const k = part.trim();
+        if (k && !out.includes(k)) out.push(k);
+        if (out.length >= ALIAS_MAX) break;
+    }
+    return out;
+}
 
 /** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整个胶囊失败)。 */
 export function normalizePoints(raw, max = 5) {
@@ -81,7 +97,12 @@ export function normalizePoints(raw, max = 5) {
         const t = String(p.t ?? '').replace(/\s+/g, ' ').trim().slice(0, POINT_TEXT_MAX);
         if (!t || seen.has(k + t)) continue;
         seen.add(k + t);
-        out.push({ k, t, key: String(p.key ?? '').trim().slice(0, POINT_KEY_MAX) });
+        const pt = { k, t, key: keysOf(p.key).join('/').slice(0, POINT_KEY_MAX) };
+        if (k === ITEM_KIND) { // 来历只属于物品;空串当没有
+            const d = String(p.d ?? '').replace(/\s+/g, ' ').trim().slice(0, POINT_ORIGIN_MAX);
+            if (d) pt.d = d;
+        }
+        out.push(pt);
     }
     return out;
 }
@@ -108,9 +129,10 @@ export function normalizeNow(raw) {
 
 /**
  * 派生锚点:folded 胶囊(或 extraIds 里的胶囊,折叠提交前预演用)的 points 去掉 retired。
- * 返回 [{ id, k, t, key, at, cap }],顺序 = 胶囊顺序 × 序号。
+ * 返回 [{ id, k, t, key, at, d, now, cap, p }],顺序 = 胶囊顺序 × 序号。
+ * d = 物品的来历(在点上);now = 物品的现状(itemNow[id],可不传)。
  */
-export function deriveAnchors(caps, retired, extraIds = null) {
+export function deriveAnchors(caps, retired, extraIds = null, itemNow = null) {
     const out = [];
     const ret = retired || {};
     for (const cap of caps) {
@@ -121,7 +143,7 @@ export function deriveAnchors(caps, retired, extraIds = null) {
             const p = pts[i];
             const id = p.id || pointId(cap, i);
             if (ret[id] !== undefined) continue;
-            out.push({ id, k: p.k, t: p.t, key: p.key || '', at: p.at, cap, p });
+            out.push({ id, k: p.k, t: p.t, key: p.key || '', at: p.at, d: p.d || '', now: itemNow?.[id] || null, cap, p });
         }
     }
     return out;
@@ -129,7 +151,7 @@ export function deriveAnchors(caps, retired, extraIds = null) {
 
 /** 当前生效的锚点;没有长期记忆就没有锚点。 */
 export function activeAnchors(data) {
-    return data?.memory ? deriveAnchors(data.capsules, data.memory.retired) : [];
+    return data?.memory ? deriveAnchors(data.capsules, data.memory.retired, null, data.memory.itemNow) : [];
 }
 
 /** 已撤下的锚点(含结果),面板底部折叠区用。 */
@@ -141,13 +163,21 @@ export function retiredAnchors(data) {
         if (!cap.folded || !Array.isArray(cap.points)) continue;
         cap.points.forEach((p, i) => {
             const id = p.id || pointId(cap, i);
-            if (ret[id] !== undefined) out.push({ id, k: p.k, t: p.t, key: p.key || '', at: p.at, cap, result: ret[id] });
+            if (ret[id] !== undefined) out.push({ id, k: p.k, t: p.t, key: p.key || '', at: p.at, d: p.d || '', cap, result: ret[id] });
         });
     }
     return out;
 }
 
-export const anchorLine = (a) => `[${a.k}] ${a.t}`;
+/** 注入与全文用的锚点行;物品多带「来历」和「现状」,空的部分省略。 */
+export function anchorLine(a) {
+    let s = `[${a.k}] ${a.t}`;
+    if (a.k === ITEM_KIND) {
+        if (a.d) s += `｜来历:${a.d}`;
+        if (a.now?.t) s += `｜现状:${a.now.t}`;
+    }
+    return s;
+}
 
 /** 锚点 → 「[类别] 内容」每行一条,按类别分组(组内保持来源顺序)。 */
 export function anchorsText(anchors) {
@@ -168,6 +198,7 @@ export function rebuildText(data) {
 // 不同胶囊常把同一件事各记一条(同一约定被重申、同一数字在物品和数字里各记一次)。
 // 判重:内容互相包含,或者用字相似度高,或者(仅约定、称呼)同类别且 key 互相包含;台词只认相同或互相包含。
 // 保留较新的一条(代表最新状态);旧的那条完整包含新的,或同一约定旧的写得更长时,保留旧的(信息更全)。
+// 两条重复的物品,带来历 d 的优先保留(来历不经模型改写,丢了就补不回来)。
 
 const normT = (s) => String(s || '').replace(/[\s\p{P}\p{S}]/gu, '');
 function bigrams(s) {
@@ -196,16 +227,17 @@ function isDup(a, b) {
     const sameKind = a.k === b.k || (NUMERIC_KINDS.has(a.k) && NUMERIC_KINDS.has(b.k));
     if (!sameKind) return false;
     // key 重叠只对约定、称呼算重复(同一约定被重申、称呼被更新);物品同名常是不同事件(得到/使用/送出),不能并
-    if (KEY_KINDS.has(a.k) && a.k === b.k && a.key && b.key && Math.min(a.key.length, b.key.length) >= 2
-        && (a.key.includes(b.key) || b.key.includes(a.key))) return true;
+    // key 有别名时,任意一对别名互相包含就算重叠
+    if (KEY_KINDS.has(a.k) && a.k === b.k && a.keys.some(x => b.keys.some(y => Math.min(x.length, y.length) >= 2 && (x.includes(y) || y.includes(x))))) return true;
     return jaccard(a.g, b.g) >= 0.6;
 }
 
 /**
  * anchors 按来源顺序(旧→新)。返回 { [被合并的 id]: 结果 },调用方并进 retired。
+ * keptOf 给了对象就记下 { [被合并的 id]: 保留的那条 id },调用方据此挪现状。
  */
-export function dedupeAnchors(anchors) {
-    const items = anchors.map(a => { const n = normT(a.t); return { a, k: a.k, key: normT(a.key), n, g: bigrams(n), num: numsOf(n) }; });
+export function dedupeAnchors(anchors, keptOf = null) {
+    const items = anchors.map(a => { const n = normT(a.t); return { a, k: a.k, keys: keysOf(a).map(normT).filter(Boolean), n, g: bigrams(n), num: numsOf(n) }; });
     const kept = [];
     const drop = {};
     for (let i = items.length - 1; i >= 0; i--) { // 从新到旧
@@ -213,15 +245,68 @@ export function dedupeAnchors(anchors) {
         if (!it.n) { kept.push(it); continue; }
         const hit = kept.find(k => k.n && isDup(it, k));
         if (!hit) { kept.push(it); continue; }
-        const fuller = it.n.length > hit.n.length && (it.n.includes(hit.n) || (it.k === '约定' && hit.k === '约定'));
-        if (fuller) { // 旧的包含新的(或同一约定旧的写得更全):换成保留旧的
+        const bothItems = it.k === ITEM_KIND && hit.k === ITEM_KIND && !!it.a.d !== !!hit.a.d;
+        const fuller = bothItems ? !!it.a.d
+            : it.n.length > hit.n.length && (it.n.includes(hit.n) || (it.k === '约定' && hit.k === '约定'));
+        if (fuller) { // 旧的包含新的(或同一约定旧的写得更全、旧的物品带来历):换成保留旧的
             drop[hit.a.id] = `与「${it.a.t.slice(0, 30)}」重复,已合并`;
+            if (keptOf) keptOf[hit.a.id] = it.a.id;
             kept[kept.indexOf(hit)] = it;
         } else {
             drop[it.a.id] = `与「${hit.a.t.slice(0, 30)}」重复,已合并`;
+            if (keptOf) keptOf[it.a.id] = hit.a.id;
         }
     }
     return drop;
+}
+
+// ── 物品现状(itemNow) ──
+
+/** 模型的 items → [{ id, now, at, merge }],格式不对的丢掉(id 是否合法由 applyItems 对着锚点判断)。 */
+export function normalizeItems(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const it of raw) {
+        const id = String(it?.id ?? '').trim();
+        if (!id) continue;
+        const now = String(it?.now ?? '').replace(/\s+/g, ' ').trim().slice(0, ITEM_NOW_MAX);
+        const at = Number.isInteger(Number(it?.at)) && it?.at !== null && it?.at !== '' ? Number(it.at) : null;
+        const merge = Array.isArray(it?.merge) ? it.merge.map(x => String(x ?? '').trim()).filter(Boolean) : [];
+        out.push({ id, now, at, merge });
+    }
+    return out;
+}
+
+/**
+ * 应用模型的 items(纯函数)。anchors = 提交前预演的生效锚点(已去掉 resolved 撤下的),按来源顺序(旧→新)。
+ * 只认其中 k === '物品' 的 id;合并时主条优先取最早的、带来历 d 的那条,其余并入 retired 候选。
+ * atOk(n) 判断现状楼号是否合法,不合法则 at 置空、现状文字保留。
+ * 返回 { itemNow: 新表, merged: { [被并入的 id]: 结果 } }。
+ */
+export function applyItems(rawItems, anchors, oldItemNow, atOk = () => true) {
+    const itemNow = {};
+    for (const [id, v] of Object.entries(oldItemNow || {})) if (v && typeof v === 'object') itemNow[id] = { t: String(v.t ?? ''), at: v.at ?? null };
+    const merged = {};
+    const order = new Map();
+    const byId = new Map();
+    anchors.forEach((a, i) => { if (a.k === ITEM_KIND) { byId.set(a.id, a); order.set(a.id, i); } });
+    for (const it of normalizeItems(rawItems)) {
+        if (!byId.has(it.id) || merged[it.id]) continue;
+        const group = [it.id];
+        for (const m of it.merge) if (byId.has(m) && !merged[m] && !group.includes(m)) group.push(m);
+        const withD = group.filter(id => byId.get(id).d).sort((x, y) => order.get(x) - order.get(y));
+        const primary = withD.length ? withD[0] : it.id;
+        const others = group.filter(id => id !== primary);
+        for (const o of others) merged[o] = `并入「${byId.get(primary).t.slice(0, 30)}」`;
+        if (it.now) {
+            itemNow[primary] = { t: it.now, at: it.at !== null && atOk(it.at) ? it.at : null };
+        } else if (!itemNow[primary]) { // 这次没给现状:继承被并入的那条里最新的
+            const from = others.filter(o => itemNow[o]).sort((x, y) => order.get(y) - order.get(x))[0];
+            if (from) itemNow[primary] = itemNow[from];
+        }
+        for (const o of others) delete itemNow[o];
+    }
+    return { itemNow, merged };
 }
 
 // ── 版本链 ──

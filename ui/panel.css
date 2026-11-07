@@ -268,6 +268,7 @@
 .mn-prose p { margin: 0; font-size: 15px; line-height: 1.9; text-indent: 2em; }
 .mn-prose.clamp { max-height: calc(1.9em * 6); overflow: hidden; position: relative; }
 .mn-person { display: flex; align-items: center; gap: 12px; padding: 8px 0 10px; }
+.mn-person + .mn-person { border-top: 1px dashed var(--line); padding-top: 14px; margin-top: 6px; }
 .mn-person > .mn-pearl { margin: 0 2px 0 4px; }
 .mn-person-name { flex: none; min-width: 2.4em; font-weight: 700; font-size: 20px; line-height: 1.35; color: var(--title); padding: 3px 12px 3px 0; margin-right: 0; }
 .mn-root[data-theme="night"] .mn-person-name { border-right: 1px solid var(--line-soft); padding-right: 14px; min-width: 2.6em; }

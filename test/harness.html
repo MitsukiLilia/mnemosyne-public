@@ -432,6 +432,21 @@ T('T4b 删楼后保留区回退:放出保留区、继续聊再藏回去', async 
     eq('T4b.9 登记=14 楼', data().hiddenIds.length, 14);
 });
 
+T('T4c 清除本聊天数据:放出隐藏、清空记忆、保留摘要来源', async () => {
+    await setupCaps(12); S({ autoRecord: false });
+    recorder.setSource(ctxNow(), { mode: 'extract', rule: { type: 'tag', tag: 'summary' } });
+    check('T4c.0 前置:有胶囊且有隐藏', data().capsules.length > 0 && data().hiddenIds.length > 0);
+    const r = recorder.clearChatData(ctxNow());
+    check('T4c.1 返回 ok 并报告放出的楼数', r.ok && r.unhidden === 20, JSON.stringify(r));
+    check('T4c.2 所有楼都不再隐藏', chat.every(m => !m.is_system));
+    const d = ctxNow().chatMetadata.mnemosyne;
+    check('T4c.3 胶囊/记忆/版本/隐藏登记都清空', d && !d.capsules.length && !d.memory && !d.versions.length && !d.hiddenIds.length && !d.backfill, JSON.stringify(d));
+    eq('T4c.4 摘要来源保留', d.source?.mode, 'extract');
+    await resetWorld({ reserve: 3 });
+    const r2 = recorder.clearChatData(ctxNow());
+    check('T4c.5 空聊天上清除不报错也不建数据', r2.ok && !ctxNow().chatMetadata.mnemosyne);
+});
+
 T('T5 折叠:阈值/四节/润色回落/撤销', async () => {
     await resetWorld({ reserve: 3, foldThreshold: 1e6 });
     await loadHistory(16); await backfillAll();
@@ -1407,6 +1422,162 @@ T('T30 面板:摘要来源与注入卡片', async () => {
     api.panel.close();
 });
 
+T('T31 物品档案:来历 d / 别名 / 现状 itemNow / 合并 / 注入', async () => {
+    // 1. normalizePoints
+    const np = memMod.normalizePoints([
+        { k: '物品', t: '怀表', key: '怀表', d: '  祖父留下的   旧怀表 ' },
+        { k: '物品', t: '钥匙', key: '钥匙', d: '长'.repeat(200) },
+        { k: '约定', t: '约好明天见', key: '明天', d: '非物品的来历要丢' },
+        { k: '物品', t: '纸条', key: '纸条', d: '   ' },
+    ], 10);
+    eq('T31.1a 物品保留 d 并规整空白', np[0].d, '祖父留下的 旧怀表');
+    eq('T31.1b d 截到 120', np[1].d.length, 120);
+    check('T31.1c 非物品的 d 丢掉、空 d 当没有', !('d' in np[2]) && !('d' in np[3]), JSON.stringify(np));
+    // 2. keysOf 与别名命中
+    check('T31.2a keysOf 拆分/去空/去重/最多 3 个', memMod.keysOf('怀表/表').join() === '怀表,表' && memMod.keysOf(' 甲 / /甲/乙/丙/丁').join() === '甲,乙,丙' && memMod.keysOf('').length === 0);
+    eq('T31.2b normalizePoints 的 key 最多 3 个别名', memMod.normalizePoints([{ k: '物品', t: 'x', key: 'a/b/c/d' }])[0].key, 'a/b/c');
+    {
+        const caps = [{ id: 'k1', folded: true, toId: 'z', points: [{ id: 'k1:0', k: '物品', t: '银色怀表', key: '怀表/表', at: 'z' }, { id: 'k1:1', k: '物品', t: '一把钥匙', key: '钥匙', at: 'z' }] }];
+        const dd = { capsules: caps, memory: { sections: {}, retired: {}, itemNow: {} } };
+        await resetWorld({ reserve: 3 }); S({ autoRecord: false });
+        await loadHistory(4);
+        chat[chat.length - 1].mes += '他看了一眼表。';
+        const hit = inject.selectAnchors(ctxNow(), dd, S({})).map(a => a.id);
+        check('T31.2c 任意别名(表)出现在最近文本就命中,其余不命中', hit.join() === 'k1:0', hit.join());
+        const p1 = memMod.dedupeAnchors([
+            { id: 'p', k: '称呼', t: '甲称乙为学长', key: '学长/老师' }, { id: 'q', k: '称呼', t: '甲改口叫乙前辈', key: '老师' },
+        ]);
+        check('T31.2d 称呼按别名重叠判重', Object.keys(p1).join() === 'p', JSON.stringify(p1));
+        const ck = fold.checkPolish('她把怀表放进口袋,又摸了摸那件祖传物。', '她把怀表放进口袋,又摸了摸口袋里别的东西,然后走了。', [{ k: '物品', t: '银色怀表', key: '怀表/祖传物' }]);
+        check('T31.2e 润色稿丢了草稿里出现过的别名 → 退回', !!ck && ck.includes('祖传物'), ck);
+        check('T31.2f 草稿里没出现的别名不要求', fold.checkPolish('她把怀表放进口袋。', '她把怀表收进了口袋里面。', [{ k: '物品', t: '银色怀表', key: '怀表/祖传物' }]) === null);
+    }
+
+    // ── 折叠场景 ──
+    const setup = async () => {
+        await resetWorld({ reserve: 3 });
+        fx.seq = 0;
+        fx.pointsFn = () => {
+            const q = ++fx.seq;
+            if (q === 1) return [{ k: '物品', t: '银色怀表', key: '怀表/表', d: '祖父留下的旧怀表,盖里刻着名字' }];
+            if (q === 2) return [{ k: '物品', t: '乙借走了怀表', key: '怀表' }];
+            if (q === 3) return [{ k: '台词', t: `「第${q}句」`, key: '' }, { k: '物品', t: '一张纸条', key: '纸条' }];
+            return [{ k: '数字', t: `数字${q}`, key: `${q}号` }];
+        };
+        await loadHistory(12); await backfillAll();
+        const d = data();
+        return { A: d.capsules[0].id + ':0', B: d.capsules[1].id + ':0', Q: d.capsules[2].id + ':0', N: d.capsules[3].id + ':0' };
+    };
+    let ids = await setup();
+    check('T31.0 前置:来历 d 随胶囊入库', data().capsules[0].points[0].d === '祖父留下的旧怀表,盖里刻着名字' && !('d' in data().capsules[1].points[0]), JSON.stringify(data().capsules[0].points));
+    // 4. 合并:带 d 的旧条当主条
+    fx.mergeExtra = () => ({ items: [{ id: ids.A, now: '被乙借走,在乙手里', at: 3, merge: [ids.B] }] });
+    await recorder.foldNowExclusive(ctxNow());
+    let m = data().memory;
+    check('T31.4a 现状写入主条(带 d 的旧条)', m.itemNow[ids.A]?.t === '被乙借走,在乙手里' && m.itemNow[ids.A].at === 3 && !m.itemNow[ids.B], JSON.stringify(m.itemNow));
+    check('T31.4b 另一条进 retired,result 含「并入」', (m.retired[ids.B] || '').includes('并入') && (m.retired[ids.B] || '').includes('银色怀表'), JSON.stringify(m.retired));
+    check('T31.4c 锚点里只剩主条,带来历与现状', (() => { const as = memMod.activeAnchors(data()).filter(a => a.k === '物品'); return as.some(a => a.id === ids.A && a.d && a.now?.t) && !as.some(a => a.id === ids.B); })());
+    check('T31.4d memory.text 的锚点行格式', m.text.includes('[物品] 银色怀表｜来历:祖父留下的旧怀表,盖里刻着名字｜现状:被乙借走,在乙手里'), m.text.slice(-300));
+    // 10. 注入:关键词不在最近楼层时不出现;命中时格式正确
+    let v = inject.refreshInject(ctxNow());
+    check('T31.10a 关键词不在最近楼层:物品行(含来历、现状)一个字都不进注入', !v.includes('银色怀表') && !v.includes('来历') && !v.includes('现状:'), v);
+    chat[chat.length - 1].mes += '他又看了一眼表。';
+    v = inject.refreshInject(ctxNow());
+    check('T31.10b 别名命中:[物品] t｜来历:…｜现状:…', v.includes('[物品] 银色怀表｜来历:祖父留下的旧怀表,盖里刻着名字｜现状:被乙借走,在乙手里'), v);
+    // 面板
+    api.panel.open('memory');
+    const root = () => document.getElementById('mnemosyne-host').shadowRoot;
+    check('T31.6a 面板:来历/现状两行小字,现状带楼号', root().textContent.includes('来历 · 祖父留下的旧怀表') && root().textContent.includes('现状 · 被乙借走,在乙手里 #3'), root().textContent.slice(0, 200));
+    check('T31.6b 面板:锚点节说明补了半句', root().textContent.includes('同一件东西会被合并成一条'));
+    api.panel.close();
+    // 第二次折叠:材料带来历和现状;现状更新;撤销回到上一版
+    const snapNow = JSON.stringify(data().memory.itemNow);
+    fx.mergeExtra = () => ({ items: [{ id: ids.A, now: '乙已归还', at: 5 }] });
+    await recorder.foldNowExclusive(ctxNow());
+    const sec = fx.lastMerge.split('【现有锚点】')[1].split('【待合并的剧情记录】')[0];
+    check('T31.3a 材料行:[id] [物品] t｜来历:d｜现状:now(#楼号)', sec.includes(`[${ids.A}] [物品] 银色怀表｜来历:祖父留下的旧怀表,盖里刻着名字｜现状:被乙借走,在乙手里(#3)`), sec);
+    check('T31.8a 第二次折叠更新现状', data().memory.itemNow[ids.A]?.t === '乙已归还');
+    fold.undoFold(ctxNow());
+    eq('T31.8b 撤销上一次折叠:itemNow 回到上一版', JSON.stringify(data().memory.itemNow), snapNow);
+    // 3. 旧数据:memory 没有 itemNow
+    delete data().memory.itemNow;
+    let threw = false;
+    try { inject.refreshInject(ctxNow()); fold.editableMemoryText(data().memory); fx.mergeExtra = null; await recorder.foldNowExclusive(ctxNow()); } catch (e) { threw = String(e); }
+    check('T31.3b 旧数据(无 itemNow、点无 d)照常注入与折叠', !threw && typeof data().memory.itemNow === 'object', threw);
+    // 手动编辑长期记忆、撤下/恢复不丢现状
+    ids = await setup();
+    fx.mergeExtra = () => ({ items: [{ id: ids.A, now: '在甲手里', at: 3 }] });
+    await recorder.foldNowExclusive(ctxNow());
+    await fold.saveMemoryText(ctxNow(), fold.editableMemoryText(data().memory) + '\n');
+    fold.retireAnchor(ctxNow(), ids.A); fold.restoreAnchor(ctxNow(), ids.A);
+    eq('T31.3c 手动编辑/撤下/恢复:itemNow 原样保留', data().memory.itemNow[ids.A]?.t, '在甲手里');
+
+    // 5. 主条没有 d、merge 里有一条带 d → 主条换成带 d 的
+    ids = await setup();
+    fx.mergeExtra = () => ({ items: [{ id: ids.B, now: '乙手里', at: 3, merge: [ids.A] }] });
+    await recorder.foldNowExclusive(ctxNow());
+    m = data().memory;
+    check('T31.5 模型给的主条无 d:换成带 d 的 A', m.itemNow[ids.A]?.t === '乙手里' && (m.retired[ids.B] || '').includes('并入') && !m.retired[ids.A], JSON.stringify({ n: m.itemNow, r: m.retired }));
+    // 6. 非物品 id、不存在的 id → 丢掉
+    ids = await setup();
+    fx.mergeExtra = () => ({ items: [{ id: ids.Q, now: '台词不该有现状', at: 3 }, { id: ids.N, now: '数字也不是', at: 3 }, { id: '不存在:9', now: '乱写', at: 3 }, { id: ids.A, now: '合法', at: 3, merge: [ids.Q, '不存在:9'] }] });
+    await recorder.foldNowExclusive(ctxNow());
+    m = data().memory;
+    check('T31.6 只认物品类、存在的 id;merge 里的非法 id 也不动', Object.keys(m.itemNow).join() === ids.A && !m.retired[ids.Q] && !m.retired['不存在:9'], JSON.stringify({ n: m.itemNow, r: m.retired }));
+    // 7. at 越界 → 置空,t 保留
+    ids = await setup();
+    fx.mergeExtra = () => ({ items: [{ id: ids.A, now: '楼号写错了', at: 9999 }] });
+    await recorder.foldNowExclusive(ctxNow());
+    check('T31.7 at 超出聊天长度:at 置空、t 保留', data().memory.itemNow[ids.A]?.t === '楼号写错了' && data().memory.itemNow[ids.A].at === null, JSON.stringify(data().memory.itemNow));
+    // 9. 本地去重:带 d 的保留,被撤那条的现状挪过去
+    {
+        const kept = {};
+        const drop = memMod.dedupeAnchors([
+            { id: 'o', k: '物品', t: '银色怀表', key: '怀表', d: '祖父留下的' }, { id: 'n', k: '物品', t: '银色怀表', key: '怀表', d: '' },
+        ], kept);
+        check('T31.9a 重复物品:带 d 的旧条保留(优先于较新)', Object.keys(drop).join() === 'n' && kept.n === 'o', JSON.stringify(drop));
+        const drop2 = memMod.dedupeAnchors([
+            { id: 'o', k: '物品', t: '银色怀表', key: '怀表', d: '' }, { id: 'n', k: '物品', t: '银色怀表', key: '怀表', d: '新写的来历' },
+        ]);
+        check('T31.9b 旧条没有 d、新条有:留新条', Object.keys(drop2).join() === 'o');
+    }
+    await resetWorld({ reserve: 3 });
+    fx.seq = 0;
+    fx.pointsFn = () => { const q = ++fx.seq; return q === 1 ? [{ k: '物品', t: '银色怀表', key: '怀表', d: '祖父留下的旧怀表' }] : q === 2 ? [{ k: '物品', t: '银色怀表', key: '怀表' }] : [{ k: '数字', t: `数字${q}`, key: `${q}号` }]; };
+    await loadHistory(12); await backfillAll();
+    ids = { A: data().capsules[0].id + ':0', B: data().capsules[1].id + ':0' };
+    fx.mergeExtra = () => ({ items: [{ id: ids.B, now: '在乙手里', at: 3 }] });
+    await recorder.foldNowExclusive(ctxNow());
+    m = data().memory;
+    check('T31.9c 折叠里本地去重:现状从被撤的 B 挪到保留的 A', !!m.retired[ids.B] && !m.retired[ids.A] && m.itemNow[ids.A]?.t === '在乙手里' && !m.itemNow[ids.B], JSON.stringify({ n: m.itemNow, r: m.retired }));
+    // 12. 送出的物品不撤下:本地没有额外撤下
+    ids = await setup();
+    fx.mergeExtra = () => ({ items: [{ id: ids.A, now: '已送给丙', at: 3 }] });
+    await recorder.foldNowExclusive(ctxNow());
+    check('T31.12 送出的物品:只改现状,没有撤下', Object.keys(data().memory.retired).length === 0 && memMod.activeAnchors(data()).some(a => a.id === ids.A) && true, JSON.stringify(data().memory.retired));
+    // 锚点没了现状一并清掉
+    fx.mergeExtra = () => ({ items: [{ id: ids.A, now: '再改一次', at: 3 }], resolved: [{ id: ids.A, result: '手动了结' }] });
+    await recorder.foldNowExclusive(ctxNow());
+    check('T31.6c 锚点被撤下:itemNow 条目一并清掉(主条被 resolved 时 items 作废)', !data().memory.itemNow[ids.A] && data().memory.retired[ids.A] === '手动了结', JSON.stringify(data().memory));
+    fx.mergeExtra = null;
+    fx.pointsFn = null;
+
+    // 11. 提取模式:细节句进 clues;d 与线索不符时丢 d 留点
+    const cl = prescanMod.prescanClues('走廊很安静。怀表的盖子里刻着一个名字。他把怀表交给了她。窗外下着雨。');
+    check('T31.11a 细节句进 clues,同时命中变化的归变化不重复', cl.some(c => c.includes('刻着一个名字')) && cl.filter(c => c.includes('交给')).length === 1, JSON.stringify(cl));
+    check('T31.11b 日文细节句', prescanMod.prescanClues('これは祖母の形見の時計だ。').some(c => c.includes('形見')));
+    {
+        const cap = { id: 'e', clues: ['怀表的盖子里刻着一个名字', '据说是祖父亲手做的'], points: [] };
+        const r = fold.normalizeNewPoints([
+            { cap: 1, k: '物品', t: '怀表', key: '怀表', d: '盖子里刻着一个名字,据说是祖父亲手做的' },
+            { cap: 1, k: '物品', t: '钥匙', key: '钥匙', d: '来自远方的神秘国度,象征着永恒的誓言' },
+        ], [cap], 5).get(cap) || [];
+        check('T31.11c 符合线索的 d 保留;不符的丢 d、点本身保留', r.length === 2 && !!r[0].d && r[1].t === '钥匙' && !('d' in r[1]), JSON.stringify(r));
+    }
+    check('T31.12b 折叠提示词:物品撤下规则改写', (await import('../core/prompts.js')).PROMPT_FOLD_MERGE.includes('送出、易手、丢失、损毁都不撤'));
+    check('T31.11d 提示词:补点那段限定 d 取自线索', (await import('../core/prompts.js')).PROMPT_FOLD_MERGE.includes('物品的 d 只能取自该记录的线索'));
+});
+
 async function runAll() {
     results = [];
     logEl.textContent = '';
@@ -1599,12 +1770,19 @@ async function seedDemo() {
         hide.hideRange(ctx, a, b, 25);
     });
     const demoText = '## 前情\n清晨的雨停了,站台上只剩下两个沉默的人。车来的时候,谁也没有先开口,直到一句关于行李的小小误会把僵住的空气撬开了一道缝。之后他们结伴上路,在陌生的城里找到最后一间空房,轮流守着那盏不肯熄灭的灯。\n\n' +
-        '## 人物与关系\n甲:先开口提出同行的人,谨慎,话不多(#2 提出同行)。\n乙:犹豫之后答应结伴,对离开的理由避而不谈(#4 点头)。\n\n' +
+        '## 人物与关系\n### 甲\n倾向:遇事先观察再开口,但对乙会主动让步\n当前:与乙结伴同行,在旅店守夜\n来由:#2 在站台先开口提出同行;#5–6 让出房间\n### 乙\n倾向:习惯独自行动,被追问来历时转移话题\n当前:答应结伴,对离开的理由仍避而不谈\n来由:#4 犹豫后点头;#7–8 第一次叫甲「前辈」\n\n' +
         '## 当前状态\n地点:旅店\n时间:次日清晨\n在场:甲、乙\n\n' +
         '## 时间线\n清晨:站台相遇\n白天:行李误会、结伴同行\n夜里:旅店守夜\n次日:路口分开\n\n## 未结事项\n乙没有说完的离开的理由。';
     d.memory = { sections: memMod.sectionsFromText(demoText), retired: {}, text: '', tokens: 0, ts: Date.now() - 86400e3 };
     const demoPts = [['约定', '约好下周再见', '下周'], ['伏笔', '乙没有说完的离开的理由', ''], ['物品', '甲留下的联系方式纸条', '纸条'], ['称呼', '乙开始叫甲「前辈」', '前辈'], ['台词', '「天黑之前,我在这里等你。」', '天黑之前'], ['数字', '房费一共四千二百円', '四千二百']];
     d.capsules.slice(0, 4).forEach((c, i) => { c.points = demoPts.slice(i, i + 3).map(([k, t, key], j) => ({ id: `${c.id}:${j}`, k, t, key, at: c.toId })); });
+    // 物品档案演示:纸条带来历和现状;再给第一个胶囊补一件带别名的怀表
+    d.capsules[0].points.push({ id: `${d.capsules[0].id}:3`, k: '物品', t: '乙从祖父那里继承的银色怀表', key: '怀表/表', d: '祖父留下的旧物,盖里刻着一行小字,据说能带来好运', at: d.capsules[0].toId });
+    const slip = d.capsules.flatMap(c => c.points).find(p => p.k === '物品' && p.key === '纸条');
+    if (slip) slip.d = '甲临别时撕下笔记本的一页,写着联系方式';
+    d.memory.itemNow = {};
+    d.memory.itemNow[`${d.capsules[0].id}:3`] = { t: '乙随身带着,表盖有一道划痕', at: 8 };
+    if (slip) d.memory.itemNow[slip.id] = { t: '乙夹在车票夹里,还没有回复', at: 9 };
     d.memory.retired[d.capsules[1].points[2].id] = '手动撤下';
     memMod.rebuildText(d);
     d.versions = [{ ts: Date.now() - 2 * 86400e3, before: null, foldedIds: d.capsules.slice(0, 4).map(c => c.id) }];

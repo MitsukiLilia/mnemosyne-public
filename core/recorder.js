@@ -10,7 +10,7 @@
 import {
     assignFloorId, countTokens, coverage, ensureData, estimateTokens, fingerprint, insertCapsule,
     isStory, maxContextSize, peekData, rangeHash, reserveBoundary, resolveCapsule, scheduleSave,
-    beginEvent, summary, liveMeta, idIndex,
+    beginEvent, summary, liveMeta, idIndex, MNEMO_KEY, newData, resetRuntime,
 } from './state.js';
 import { getSettings } from './settings.js';
 import { generateJson, llmOptsFrom } from './llm.js';
@@ -21,8 +21,8 @@ import { extractRound, normalizeSource, sourceOf } from './extract.js';
 import { clueBlock, prescanClues } from './prescan.js';
 import { status, emitChange, setError } from './bus.js';
 import { foldNow, foldWhileNeeded, needsFold } from './fold.js';
-import { refreshInject } from './inject.js';
-import { hideRange } from './hide.js';
+import { refreshInject, injectStats } from './inject.js';
+import { hideRange, restoreAll } from './hide.js';
 
 /** 测试台用:规划阶段(不含 LLM 等待)累计耗时。 */
 export const perf = { planMs: 0, plans: 0, recordMs: 0 };
@@ -180,7 +180,7 @@ export function normalizeCapsules(parsed, n, maxPoints = 5) {
 
 /** 必留点落库:补 id(`${胶囊id}:${序号}`)和来源楼 at(胶囊终点)。 */
 function stampPoints(cap, points) {
-    return points.map((p, i) => ({ id: `${cap.id}:${i}`, k: p.k, t: p.t, key: p.key, at: cap.toId }));
+    return points.map((p, i) => ({ id: `${cap.id}:${i}`, k: p.k, t: p.t, key: p.key, ...(p.d ? { d: p.d } : {}), at: cap.toId }));
 }
 
 const maxPointsOf = (settings) => Math.max(0, Math.min(10, Math.floor(Number(settings.maxPoints) || 0)));
@@ -661,6 +661,28 @@ export function setSource(ctx, patch) {
     if (data.source.mode === 'extract') kick(ctx, 0);
     emitChange();
     return data.source;
+}
+
+/**
+ * 清除本聊天的全部记忆数据:先放出我们藏的楼,再删掉胶囊/长期记忆/锚点/版本链/补建进度。
+ * 只保留「摘要来源」这项聊天设置。任务进行中拒绝。返回 { ok, unhidden } 或 { skipped }。
+ */
+export function clearChatData(ctx) {
+    if (busy) return { skipped: 'busy' };
+    const meta = ctx.chatMetadata;
+    if (!meta?.[MNEMO_KEY]) return { ok: true, unhidden: 0 };
+    const unhidden = restoreAll(ctx);
+    const src = meta[MNEMO_KEY]?.source;
+    if (src) meta[MNEMO_KEY] = Object.assign(newData(), { source: src });
+    else delete meta[MNEMO_KEY];
+    resetRuntime(ctx);
+    resetRecorderRuntime();
+    status.lastFold = null;
+    injectStats.last = null;
+    scheduleSave(ctx);
+    refreshInject(ctx);
+    emitChange();
+    return { ok: true, unhidden };
 }
 
 /** 手动立即折叠(长期记忆页的按钮)。 */

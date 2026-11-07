@@ -14,8 +14,8 @@ import { cleanMessageText, ensureRegexEngine } from './purify.js';
 import { PROMPT_FOLD_MERGE, PROMPT_FOLD_POLISH, SECTION_KEYS, SECTION_TITLES } from './prompts.js';
 import { sanitizeOrigins } from './people.js';
 import {
-    activeAnchors, anchorLine, anchorsText, asText, cloneMemory, composeMemory, dedupeAnchors, deriveAnchors, parseSections,
-    normalizePoints, pointId, protectedIds, rebuildText, sectionsFromText,
+    activeAnchors, anchorsText, applyItems, asText, cloneMemory, composeMemory, dedupeAnchors, deriveAnchors, keysOf, parseSections,
+    ITEM_KIND, normalizePoints, pointId, protectedIds, rebuildText, sectionsFromText,
 } from './memory.js';
 import { refreshInject } from './inject.js';
 import { pushNotice, status } from './bus.js';
@@ -119,7 +119,15 @@ const rangeLabel = (ctx, cap) => {
     return fi === ti ? `#${fi + 1} ` : `#${fi + 1}–${ti + 1} `;
 };
 
-const anchorLineWithId = (a) => `[${a.id}] ${anchorLine(a)}`;
+/** 给合并模型看的锚点行:[id] [类别] 内容;物品再带「来历」和「现状(#楼号)」,没有的部分不写。 */
+function anchorLineWithId(a) {
+    let s = `[${a.id}] [${a.k}] ${a.t}`;
+    if (a.k === ITEM_KIND) {
+        if (a.d) s += `｜来历:${a.d}`;
+        if (a.now?.t) s += `｜现状:${a.now.t}${a.now.at ? `(#${a.now.at})` : ''}`;
+    }
+    return s;
+}
 
 /** 合并输出里的 resolved → { id: 结果 };只认上下文里出现过的 id。 */
 export function normalizeResolved(raw, validIds) {
@@ -140,7 +148,7 @@ export function normalizeResolved(raw, validIds) {
 export function checkPolish(draft, polished, anchors) {
     if (polished.length < draft.length * 0.6) return '润色稿比草稿短太多';
     for (const a of anchors) {
-        if (a.key && draft.includes(a.key) && !polished.includes(a.key)) return `润色稿丢了「${a.key}」`;
+        for (const k of keysOf(a)) if (draft.includes(k) && !polished.includes(k)) return `润色稿丢了「${k}」`;
         if (a.k === '称呼' && a.t && draft.includes(a.t) && !polished.includes(a.t)) return `润色稿丢了「${a.t}」`;
     }
     return null;
@@ -153,7 +161,7 @@ const needsPoints = (c) => !(c.points?.length) && Array.isArray(c.clues) && c.cl
 
 /**
  * 合并输出里的 newPoints → Map(胶囊 → 规范化的新点)。只认待补的胶囊;
- * 台词必须原样出现在该胶囊的线索里,不在的丢掉;每个胶囊不超过 maxPoints 条。
+ * 台词必须原样出现在该胶囊的线索里,不在的丢掉;物品的来历 d 至少一半二字组要出现在线索里,否则只丢 d;每个胶囊不超过 maxPoints 条。
  */
 // 台词核对只看原话本身:模型常带说话人前缀(「乙:『……』」),线索里只有引号内那段。
 // 取引号内的文字(没有引号就去掉「名字:」前缀),去掉空白和标点后,必须是某条线索的子串。
@@ -163,6 +171,17 @@ function quoteInClues(t, clues) {
     const core = bare(q ? q[1] : String(t || '').replace(/^[^:：]{1,12}[:：]/, ''));
     if (core.length < 2) return false;
     return clues.some(cl => bare(cl).includes(core));
+}
+
+/** 来历 d 核对:去掉标点后,至少一半的二字组出现在线索里。 */
+function originInClues(d, clues) {
+    const core = bare(d);
+    if (core.length < 2) return false;
+    const hay = clues.map(bare);
+    let hit = 0;
+    const total = core.length - 1;
+    for (let i = 0; i < total; i++) if (hay.some(h => h.includes(core.slice(i, i + 2)))) hit++;
+    return hit * 2 >= total;
 }
 
 export function normalizeNewPoints(raw, batch, maxPoints = 5) {
@@ -176,17 +195,25 @@ export function normalizeNewPoints(raw, batch, maxPoints = 5) {
         per.get(cap).push(it);
     }
     for (const [cap, list] of per) {
-        const ok = normalizePoints(list, 50).filter(p => p.k !== '台词' || quoteInClues(p.t, cap.clues));
+        const ok = normalizePoints(list, 50).filter(p => p.k !== '台词' || quoteInClues(p.t, cap.clues)).map((p) => {
+            if (p.d && !originInClues(p.d, cap.clues)) { const { d, ...rest } = p; return rest; }
+            return p;
+        });
         if (ok.length) out.set(cap, ok.slice(0, maxPoints));
     }
     return out;
 }
 
-/** 来由里的 #楼号:超出聊天长度、或不落在任何胶囊覆盖范围内的去掉。 */
-function checkOrigins(ctx, data, people) {
+/** 楼号是否合法:在聊天长度内,且落在某个胶囊覆盖范围里(来由、物品现状共用)。 */
+function floorChecker(ctx, data) {
     const ranges = coverage(ctx, data).filter(r => r.fi >= 0 && r.ti >= r.fi).map(r => [r.fi + 1, r.ti + 1]);
     const len = ctx.chat.length;
-    return sanitizeOrigins(people, (n) => n >= 1 && n <= len && ranges.some(([a, b]) => n >= a && n <= b));
+    return (n) => n >= 1 && n <= len && ranges.some(([a, b]) => n >= a && n <= b);
+}
+
+/** 来由里的 #楼号:超出聊天长度、或不落在任何胶囊覆盖范围内的去掉。 */
+function checkOrigins(ctx, data, people) {
+    return sanitizeOrigins(people, floorChecker(ctx, data));
 }
 
 /** 折叠最早的一半未折叠胶囊。返回 { folded, polished, reason } 或 { skipped }。 */
@@ -230,7 +257,7 @@ export async function foldNow(ctx) {
     const prevPoints = new Map();
     for (const [cap, pts] of added) {
         prevPoints.set(cap, cap.points);
-        cap.points = pts.map((p, i) => ({ id: pointId(cap, i), k: p.k, t: p.t, key: p.key, at: cap.toId }));
+        cap.points = pts.map((p, i) => ({ id: pointId(cap, i), k: p.k, t: p.t, key: p.key, ...(p.d ? { d: p.d } : {}), at: cap.toId }));
     }
     let committed = false;
     try {
@@ -238,8 +265,20 @@ export async function foldNow(ctx) {
         const retired = {};
         for (const [id, r] of Object.entries(oldMem?.retired || {})) retired[id] = r;
         Object.assign(retired, resolved);
-        Object.assign(retired, dedupeAnchors(deriveAnchors(data.capsules, retired, batchIds))); // 模型漏判的重复,本地再合并一遍
-        const finalAnchors = deriveAnchors(data.capsules, retired, batchIds);
+        // 物品现状:模型给的 items 在本地对着预演锚点校验、合并;被并入的条进 retired
+        const itemRes = applyItems(merged.items, deriveAnchors(data.capsules, retired, batchIds), oldMem?.itemNow, floorChecker(ctx, data));
+        const itemNow = itemRes.itemNow;
+        Object.assign(retired, itemRes.merged);
+        const keptOf = {};
+        const dups = dedupeAnchors(deriveAnchors(data.capsules, retired, batchIds), keptOf); // 模型漏判的重复,本地再合并一遍
+        Object.assign(retired, dups);
+        for (const id of Object.keys(dups)) { // 被去重撤下的那条有现状而保留的没有:挪过去
+            let to = keptOf[id];
+            for (let g = 0; to && dups[to] && g < 10; g++) to = keptOf[to];
+            if (itemNow[id] && to && !dups[to] && !itemNow[to]) itemNow[to] = itemNow[id];
+            delete itemNow[id];
+        }
+        const finalAnchors = deriveAnchors(data.capsules, retired, batchIds, itemNow);
 
         if (liveMeta(ctx) !== meta) return { skipped: 'stale' };
         let polished = false;
@@ -272,7 +311,8 @@ export async function foldNow(ctx) {
             if (!live.has(id) && !pointExists(data, id, batchIds)) delete retired[id];
         }
         data.versions.push({ ts: Date.now(), before: cloneMemory(oldMem), foldedIds: batch.map(c => c.id) });
-        data.memory = { sections, retired, text, tokens, ts: Date.now() };
+        for (const id of Object.keys(itemNow)) if (!live.has(id)) delete itemNow[id]; // 锚点没了,现状一并清掉
+        data.memory = { sections, retired, itemNow, text, tokens, ts: Date.now() };
         committed = true;
         for (const c of batch) c.folded = true; // 正文保留:链里的胶囊要能原样恢复
         trimVersions(data, Math.max(1, Math.floor(Number(settings.memoryVersions) || 5)), settings.keepFoldedText);
@@ -329,7 +369,7 @@ export async function saveMemoryText(ctx, text) {
     const t = String(text || '').trim();
     if (!t) data.memory = null;
     else {
-        const mem = { sections: sectionsFromText(t), retired: data.memory?.retired || {}, text: '', tokens: 0, ts: Date.now() };
+        const mem = { sections: sectionsFromText(t), retired: data.memory?.retired || {}, itemNow: data.memory?.itemNow || {}, text: '', tokens: 0, ts: Date.now() };
         data.memory = mem;
         rebuildText(data);
         const n = await countTokens(ctx, mem.text);
