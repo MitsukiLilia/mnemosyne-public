@@ -5,12 +5,13 @@ import { beginEvent, peekData, resolveCapsule, scheduleSave, summary } from '../
 import { activeAnchors, anchorLine, retiredAnchors, sectionsFromText } from '../core/memory.js';
 import { getSettings, saveSettings, DEFAULT_SETTINGS } from '../core/settings.js';
 import { pushNotice, status, subscribe } from '../core/bus.js';
-import { clearChatData, clearSkipped, countPending, foldNowExclusive, kick, rewriteCapsule, setSource, skippedList, startBackfill, stopBackfill } from '../core/recorder.js';
+import { clearChatData, clearSkipped, countPending, foldNowExclusive, kick, rewriteCapsule, setSource, skippedList, startBackfill, stopBackfill, tidyAnchorsExclusive } from '../core/recorder.js';
 import { editableMemoryText, restoreAnchor, retireAnchor, saveMemoryText, undoFold, unfoldedTokens } from '../core/fold.js';
 import { reconcile, restoreAll } from '../core/hide.js';
 import { PART_KEYS, injectStats, refreshInject } from '../core/inject.js';
 import { detectCandidates, isNameOk, sourceLabel, sourceOf } from '../core/extract.js';
 import { parsePeople } from '../core/people.js';
+import { chapterViews } from '../core/chapters.js';
 import { fetchCustomApiModels } from '../core/llm.js';
 import { parseExcludeTags, textPurificationDegraded } from '../core/purify.js';
 import { POINT_KINDS, SECTION_KEYS, SECTION_TITLES } from '../core/prompts.js';
@@ -133,7 +134,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
     }
 
     // ── 注入透明:上次注入多少 token、各部分占比、明细 ──
-    const PART_LABEL = { prelude: '前情', people: '人物', now: '现状', timeline: '时间线', open: '未结', anchors: '锚点', recent: '近期记录' };
+    const PART_LABEL = { prelude: '前情', people: '人物', now: '现状', timeline: '时间线', open: '未结', anchors: '锚点', recall: '旧记录', recent: '近期记录' };
     const WHY_LABEL = { recent: '最近没提到', budget: '预算裁剪', keyless: '没有关键词' };
     function injectCard(c, s) {
         const st = injectStats.last;
@@ -147,12 +148,15 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         if (warn) html += `<p class="mn-inj-note">${I.ICON_WARN}<span>注入偏长,模型可能分心;可以撤下不需要的锚点或手动精简长期记忆。</span></p>`;
         if (ui.injOpen) {
             const byId = new Map(activeAnchors(peekData(c)).map(a => [a.id, a]));
+            const capById = new Map(peekData(c)?.capsules.map(x => [x.id, x]) || []);
+            const recallTitle = (id) => capById.get(id)?.title || '(无标题)';
             const anchorLineOf = (id) => { const a = byId.get(id); return a ? `${a.k}:${a.t}` : id; };
             html += `<div class="mn-src-body"><p class="mn-hint">注入的人物(${st.peopleIn.length}):${st.peopleIn.length ? esc(st.peopleIn.join('、')) : '无'}${st.peopleOut ? `,另有 ${st.peopleOut} 人没提到、未注入` : ''}</p>
                 <p class="mn-hint">注入的锚点(${st.anchorsIn.length}):</p>${st.anchorsIn.slice(0, 40).map(id => `<div class="mn-inj-line">${esc(anchorLineOf(id))}</div>`).join('') || '<div class="mn-inj-line">无</div>'}
                 ${st.anchorsIn.length > 40 ? `<div class="mn-inj-line">……还有 ${st.anchorsIn.length - 40} 条</div>` : ''}
                 <p class="mn-hint">被筛掉的锚点(${st.anchorsOut.length}):</p>${st.anchorsOut.slice(0, 40).map(o => `<div class="mn-inj-line"><b>${WHY_LABEL[o.why] || o.why}</b> ${esc(anchorLineOf(o.id))}</div>`).join('') || '<div class="mn-inj-line">无</div>'}
-                ${st.anchorsOut.length > 40 ? `<div class="mn-inj-line">……还有 ${st.anchorsOut.length - 40} 条</div>` : ''}</div>`;
+                ${st.anchorsOut.length > 40 ? `<div class="mn-inj-line">……还有 ${st.anchorsOut.length - 40} 条</div>` : ''}
+                <p class="mn-hint">召回的旧记录(${(st.recall || []).length}):</p>${(st.recall || []).map(r => `<div class="mn-inj-line"><b>${esc(r.range || '')}</b> ${esc(recallTitle(r.id))}<span class="mn-anchor-meta mn-inj-why">命中:${esc(r.hits.join('、'))}</span></div>`).join('') || '<div class="mn-inj-line">无</div>'}</div>`;
         }
         return html + '</section>';
     }
@@ -273,7 +277,9 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         const gone = retiredAnchors(data);
         if (!list.length && !gone.length) return '';
         let html = `<section class="mn-sec mn-anchors">${secHead('锚点')}<p class="mn-sec-sub">${list.length} 条生效</p>
-            <p class="mn-hint">折叠时由胶囊的必留点汇成,润色改不动它们。伏笔、约定、推测始终注入(推测会标「未证实」),其余类别在相关词出现于最近几层时才注入。物品会带上来历和现状,同一件东西会被合并成一条。</p>`;
+            <p class="mn-hint">折叠时由胶囊的必留点汇成,润色改不动它们。伏笔、约定、推测始终注入(推测会标「未证实」),其余类别在相关词出现于最近几层时才注入。物品会带上来历和现状,同一件东西会被合并成一条。</p>
+            <div class="mn-btn-row"><button class="mn-btn" data-action="tidy-anchors" ${status.busy || !list.length ? 'disabled' : ''}>${I.ICON_RETIRE}<span>${status.busy === 'tidy' ? '整理中……' : '整理锚点'}</span></button></div>
+            <p class="mn-hint">点「整理锚点」可以让模型把已经了结的条目撤下,撤错了可以恢复,也可以用「撤销上一次折叠」整体撤回。</p>`;
         if (!list.length) html += '<p class="mn-dim">(暂无生效的锚点)</p>';
         // 按类别分组,每组默认收起;展开后每次显示 ANCHOR_STEP 条
         for (const k of POINT_KINDS) {
@@ -313,11 +319,13 @@ export function createPanel({ getCtx, onSettingsChanged }) {
     const bulletLines = (text) => String(text || '').split('\n').map(x => x.trim().replace(/^[-·•*]\s*/, '')).filter(Boolean);
     const moreLink = (key, open) => `<button class="mn-link mn-link-l" data-action="toggle-sec" data-key="${key}" aria-expanded="${open}"><span>${open ? '收起' : '展开全部'}</span></button>`;
 
-    function preludeHtml(text) {
+    // 前情按篇章分开:每篇篇首一行小字楼号,篇间用虚线隔开;展开/收起作用于整节
+    function preludeHtml(text, views) {
         const paras = bulletLines(text);
-        const long = paras.length > 2 || text.length > 150;
+        const long = views.length > 1 || paras.length > 2 || text.length > 150;
         const open = ui.memOpen.has('prelude');
-        return `<div class="mn-prose${long && !open ? ' clamp' : ''}">${paras.map(p => `<p>${esc(p)}</p>`).join('')}</div>${long ? moreLink('prelude', open) : ''}`;
+        const chap = ({ ch, label }) => `<div class="mn-chap">${label ? `<span class="mn-anchor-meta mn-chap-no">${esc(label)}</span>` : ''}${bulletLines(ch.text).map(p => `<p>${esc(p)}</p>`).join('')}</div>`;
+        return `<div class="mn-prose${long && !open ? ' clamp' : ''}">${views.map(chap).join('')}</div>${long ? moreLink('prelude', open) : ''}`;
     }
 
     function timelineHtml(text) {
@@ -363,8 +371,8 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             html += `<div class="mn-notes"><div class="mn-note"><span class="mn-note-ico">${I.ICON_WARN}</span><div class="mn-note-body"><p>本次用了草稿${status.lastFold.reason ? `:${esc(status.lastFold.reason)}` : ''}</p><small>${fmtTime(status.lastFold.ts)} · 前情没有经过润色,事实和锚点完整</small></div></div></div>`;
         }
         if (ui.editingMem) {
-            html += `<section class="mn-sec"><textarea class="mn-textarea mn-textarea-tall" data-edit="mem" rows="16">${esc(mem ? editableMemoryText(mem) : SECTION_TITLES.map(t => `## ${t}\n`).join('\n'))}</textarea>
-                <p class="mn-hint">保持五个「## 标题」不变,分节显示才会正常。「人物与关系」每人一块:先写一行「### 名字」,下面三行「倾向:……」「当前:……」「来由:#楼层 ……」。锚点不在这里改,请在保存后用下方列表撤下或恢复。</p>
+            html += `<section class="mn-sec"><textarea class="mn-textarea mn-textarea-tall" data-edit="mem" rows="16">${esc(mem ? editableMemoryText(mem, c) : SECTION_TITLES.map(t => `## ${t}\n`).join('\n'))}</textarea>
+                <p class="mn-hint">保持五个「## 标题」不变,分节显示才会正常。前情按篇章分开,每篇以 ### #楼号 开头,请保留这一行。「人物与关系」每人一块:先写一行「### 名字」,下面三行「倾向:……」「当前:……」「来由:#楼层 ……」。锚点不在这里改,请在保存后用下方列表撤下或恢复。</p>
                 <div class="mn-btn-row"><button class="mn-btn mn-btn-primary" data-action="save-mem">保存</button><button class="mn-btn" data-action="cancel-edit">取消</button></div></section>`;
         } else if (mem) {
             const sec = mem.sections || sectionsFromText(mem.text);
@@ -372,7 +380,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
                 const t = sec[k] || '';
                 let body;
                 if (!t) body = '<p class="mn-dim">(暂无)</p>';
-                else if (k === 'prelude') body = preludeHtml(t);
+                else if (k === 'prelude') body = preludeHtml(t, chapterViews(c, mem, data.capsules));
                 else if (k === 'people') body = peopleHtml(t);
                 else if (k === 'timeline') body = timelineHtml(t);
                 else body = linesHtml(t);
@@ -420,10 +428,10 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         <section class="mn-group">${secHead('记录')}
             ${numField('reserve', '保留楼层数', s.reserve, { min: 0, max: 50, hint: '最近这几层始终保留原文,不记录、不隐藏' })}
             ${numField('foldThreshold', '折叠阈值(tokens)', s.foldThreshold, { min: 500, step: 100, hint: '未折叠胶囊合计超过它就折叠最早的一半' })}
+            ${numField('preludeBudget', '前情上限(tokens)', s.preludeBudget, { min: 1000, max: 50000, step: 500, hint: '前情超过它时,把最早的两篇合并成一篇;越近的篇章保留越多细节' })}
             ${numField('batchMaxRounds', '补建每批轮数上限', s.batchMaxRounds, { min: 1, max: 40 })}
             ${numField('maxPoints', '每个胶囊的必留点上限', s.maxPoints, { min: 0, max: 10, hint: '台词、物品、数字、称呼、约定、伏笔;0 = 不收' })}
-            ${numField('memoryVersions', '折叠版本保留数', s.memoryVersions, { min: 1, max: 10, hint: '可连续撤销的次数;链里的胶囊保留正文,挤出后才清空' })}
-            <div class="mn-srow"><div class="mn-lead"><span class="mn-lead-label mn-lead-label-s">折叠后保留胶囊正文</span>${dots}${switchHtml('set-keepfolded', s.keepFoldedText, '折叠后保留胶囊正文')}</div><div class="mn-row-sub">默认只留覆盖范围,省存档</div></div>
+            ${numField('memoryVersions', '折叠版本保留数', s.memoryVersions, { min: 1, max: 10, hint: '可连续撤销的次数;前情篇章合并、整理锚点也各占一版' })}
             <div class="mn-field"><span class="mn-field-label">额外剔除的标签</span>
                 <input class="mn-input" type="text" data-set="excludeTags" value="${esc(s.excludeTags)}" placeholder="逗号分隔,如 status, panel" spellcheck="false">
                 <span class="mn-hint">预设和角色卡绑定的正则已经会自动生效(提纯走酒馆正则引擎「发送给模型」的口径,全局、角色、预设三类都算)。这里只做补充:正则没加载成功时兜底,或剔除预设留给主模型、但不想写进摘要的块(如状态栏)。整块连内容一起删。</span>
@@ -436,6 +444,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             <label class="mn-field"><span class="mn-field-label">角色</span>${selectHtml('injectRole', s.injectRole, [[0, 'system'], [1, 'user'], [2, 'assistant']])}</label>
             <label class="mn-field"><span class="mn-field-label">注入方式</span>${selectHtml('injectMode', s.injectMode, [['auto', '自动'], ['macro', '宏']])}${s.injectMode === 'macro' ? '<span class="mn-hint">已不再自动注入。把 <code>{{mnemosyne}}</code> 写进预设或角色卡里想放的位置,生成时会替换成长期记忆全文。</span>' : '<span class="mn-hint">自动 = 按下面的位置/深度/角色注入</span>'}</label>
             ${numField('anchorRecentFloors', '锚点参考的最近楼层数', s.anchorRecentFloors, { min: 1, max: 50, hint: '物品、数字、称呼、台词类锚点,相关词出现在这几层正文里才注入' })}
+            ${numField('recallMax', '召回旧记录条数', s.recallMax, { min: 0, max: 10, hint: '最近几层提到某段旧记录的关键词时,把那段原始记录带回来;0 = 关闭' })}
             ${numField('timelineInjectLines', '时间线注入条数', s.timelineInjectLines, { min: 0, max: 200, hint: '只注入最近这么多条时间线,更早的交给前情;0 = 全部注入' })}
             ${numField('injectWarnTokens', '注入偏长提醒线(tokens)', s.injectWarnTokens, { min: 1000, max: 200000, step: 500, hint: '上次注入超过它,首页的注入卡片会标黄' })}
             ${numField('injectBudgetPct', '预算(占上下文 %)', Math.round(s.injectBudgetRatio * 100), { min: 1, max: 80, hint: '超了先丢最旧的胶囊,再丢最旧的非伏笔锚点;分节不裁' })}
@@ -574,6 +583,16 @@ export function createPanel({ getCtx, onSettingsChanged }) {
                 catch (err) { toast('折叠失败:' + (err?.message || err)); }
                 render(); return;
             }
+            case 'tidy-anchors': {
+                toast('整理中……');
+                try {
+                    const r = await tidyAnchorsExclusive(c);
+                    if (r?.skipped) toast(r.skipped === 'busy' ? '有任务正在进行' : '聊天已变化,没有整理');
+                    else if (r.resolved) { ui.retiredOpen = true; toast(r.partial ? `整理到一半失败,已撤下 ${r.resolved} 条` : `整理完成,撤下 ${r.resolved} 条`); }
+                    else toast(r.partial ? '整理失败' : '整理完成,没有需要撤下的条目');
+                } catch (err) { toast('整理失败:' + (err?.message || err)); }
+                render(); return;
+            }
             case 'toggle-src': ui.srcOpen = !ui.srcOpen; render(); return;
             case 'toggle-inj': ui.injOpen = !ui.injOpen; render(); return;
             case 'src-mode': setSource(c, { mode: el.dataset.mode }); render(); return;
@@ -598,7 +617,6 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             }
             case 'set-enabled': s.enabled = !s.enabled; saveSettings(c); onSettingsChanged?.(); render(); return;
             case 'set-fab': s.showFab = !s.showFab; saveSettings(c); onSettingsChanged?.(); render(); return;
-            case 'set-keepfolded': s.keepFoldedText = !s.keepFoldedText; saveSettings(c); render(); return;
             case 'set-capi': s.customApi.enabled = !s.customApi.enabled; saveSettings(c); render(); return;
             case 'fetch-models': {
                 ui.models = { loading: true, list: ui.models.list, error: '' }; render();

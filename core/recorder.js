@@ -16,11 +16,11 @@ import { getSettings } from './settings.js';
 import { generateJson, llmOptsFrom } from './llm.js';
 import { cleanMessageText, ensureRegexEngine } from './purify.js';
 import { capsulePrompt } from './prompts.js';
-import { normalizePoints, normalizeShifts, normalizeNow } from './memory.js';
+import { keysOf, normalizeKeys, normalizePoints, normalizeShifts, normalizeNow } from './memory.js';
 import { extractRound, normalizeSource, sourceOf } from './extract.js';
 import { clueBlock, prescanClues } from './prescan.js';
 import { status, emitChange, setError } from './bus.js';
-import { foldNow, foldWhileNeeded, needsFold } from './fold.js';
+import { foldNow, foldWhileNeeded, needsFold, tidyAnchors } from './fold.js';
 import { refreshInject, injectStats } from './inject.js';
 import { hideRange, restoreAll } from './hide.js';
 
@@ -154,7 +154,7 @@ function buildBatchText(ctx, rounds, excludeTags) {
 
 export { normalizePoints };
 
-/** 模型输出 → 规范化的 [{a,b,title,text,points,shifts,now}](轮号 1 起,闭区间,互不重叠,按轮号排序)。 */
+/** 模型输出 → 规范化的 [{a,b,title,text,points,shifts,now,keys}](轮号 1 起,闭区间,互不重叠,按轮号排序)。 */
 export function normalizeCapsules(parsed, n, maxPoints = 5) {
     const list = Array.isArray(parsed?.capsules) ? parsed.capsules : (Array.isArray(parsed) ? parsed : []);
     const used = new Set();
@@ -172,7 +172,7 @@ export function normalizeCapsules(parsed, n, maxPoints = 5) {
         const text = String(it?.text ?? '').trim();
         if (!text) return;
         for (let k = a; k <= b; k++) used.add(k);
-        out.push({ a, b, title: String(it?.title ?? '').trim(), text, points: normalizePoints(it?.points, maxPoints), shifts: normalizeShifts(it?.shifts), now: normalizeNow(it?.now) });
+        out.push({ a, b, title: String(it?.title ?? '').trim(), text, points: normalizePoints(it?.points, maxPoints), shifts: normalizeShifts(it?.shifts), now: normalizeNow(it?.now), keys: normalizeKeys(it?.keys) });
     });
     out.sort((x, y) => x.a - y.a);
     return out;
@@ -331,6 +331,7 @@ async function recordBatch(ctx, rounds) {
         cap.points = stampPoints(cap, it.points);
         if (it.shifts.length) cap.shifts = it.shifts;
         if (it.now) cap.now = it.now;
+        if (it.keys.length) cap.keys = it.keys; // 召回关键词:没有就不存(索引会用 points 的 key 兜底)
         insertCapsule(ctx, data, cap);
         hideRange(ctx, fi, ti, limit);
         status.backfill.coveredTo = Math.max(status.backfill.coveredTo, ti);
@@ -407,6 +408,8 @@ async function recordExtracted(ctx, items) {
             title: ex.title, text: ex.text, tokens: tokens[k], folded: false, ts: Date.now(), points: [],
         };
         cap.points = stampPoints(cap, ex.points);
+        const pk = normalizeKeys(cap.points.flatMap(p => keysOf(p))); // 提取模式没有模型写关键词:用必留点的 key 兜底
+        if (pk.length) cap.keys = pk;
         if (clues[k].length) cap.clues = clues[k];
         insertCapsule(ctx, data, cap);
         hideRange(ctx, fi, ti, limit);
@@ -607,7 +610,7 @@ export async function rewriteCapsule(ctx, capId) {
         const data = peekData(ctx);
         const cap = data?.capsules.find(c => c.id === capId);
         if (!cap) throw new Error('找不到这个胶囊');
-        if (cap.folded) throw new Error('已折叠的胶囊没有保留文本,无法重写');
+        if (cap.folded) throw new Error('已折叠的胶囊已并入长期记忆,不能重写');
         beginEvent(ctx);
         const { fi, ti } = resolveCapsule(ctx, cap);
         if (fi < 0 || ti < fi) throw new Error('原文楼层已不存在');
@@ -625,6 +628,8 @@ export async function rewriteCapsule(ctx, capId) {
                 if (!data.capsules.includes(cap)) return { skipped: 'stale' };
                 cap.text = text; cap.title = exs[0].title; cap.tokens = tokens; cap.ts = Date.now();
                 cap.points = stampPoints(cap, normalizePoints(exs.flatMap(e => e.points), maxPoints));
+                const pk = normalizeKeys(cap.points.flatMap(p => keysOf(p)));
+                if (pk.length) cap.keys = pk; else delete cap.keys;
                 delete cap.shifts; delete cap.now;
                 const clues = rounds.flatMap(r => roundClues(ctx, r, settings.excludeTags)).slice(0, 6);
                 if (clues.length) cap.clues = clues; else delete cap.clues;
@@ -646,6 +651,8 @@ export async function rewriteCapsule(ctx, capId) {
         if (shifts.length) cap.shifts = shifts; else delete cap.shifts;
         const now = items[items.length - 1].now;
         if (now) cap.now = now; else delete cap.now;
+        const keys = normalizeKeys(items.flatMap(i => i.keys));
+        if (keys.length) cap.keys = keys; else delete cap.keys;
         delete cap.clues;
         scheduleSave(ctx);
         refreshInject(ctx);
@@ -683,6 +690,12 @@ export function clearChatData(ctx) {
     refreshInject(ctx);
     emitChange();
     return { ok: true, unhidden };
+}
+
+/** 整理锚点(长期记忆页的按钮):与记录、折叠互斥。 */
+export async function tidyAnchorsExclusive(ctx) {
+    ctxRef = ctx;
+    return await runExclusive('tidy', async () => await tidyAnchors(ctx));
 }
 
 /** 手动立即折叠(长期记忆页的按钮)。 */

@@ -267,6 +267,8 @@
 /* 长期记忆 */
 .mn-prose p { margin: 0; font-size: 15px; line-height: 1.9; text-indent: 2em; }
 .mn-prose.clamp { max-height: calc(1.9em * 6); overflow: hidden; position: relative; }
+.mn-chap + .mn-chap { border-top: 1px dashed var(--line); padding-top: 14px; margin-top: 10px; }
+.mn-chap-no { display: block; margin-bottom: 2px; }
 .mn-person { display: flex; align-items: center; gap: 12px; padding: 8px 0 10px; }
 .mn-person + .mn-person { border-top: 1px dashed var(--line); padding-top: 14px; margin-top: 6px; }
 .mn-person > .mn-pearl { margin: 0 2px 0 4px; }
@@ -376,15 +378,17 @@
 .mn-seg-item { display: inline-flex; align-items: center; gap: 4px; }
 .mn-seg-item i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .mn-inj-line { font-size: 13.5px; padding: 3px 0; overflow-wrap: anywhere; color: var(--text); }
+.mn-inj-why { display: block; }
 .mn-inj-line b { color: var(--accent-strong); font-weight: 600; margin-right: 4px; }
-.mn-root[data-theme="day"] { --s1: #4F76AD; --s2: #C9788F; --s3: #7FA3CF; --s4: #8E9BB5; --s5: #B9C6D8; --s6: #3E4A63; --s7: #D9A7B5; }
-.mn-root[data-theme="night"] { --s1: #F2B6C6; --s2: #C9788F; --s3: #E8A6B8; --s4: #8F7A83; --s5: #BFA9B2; --s6: #FFFFFF; --s7: #7A5560; }
+.mn-root[data-theme="day"] { --s1: #4F76AD; --s2: #C9788F; --s3: #7FA3CF; --s4: #8E9BB5; --s5: #B9C6D8; --s6: #3E4A63; --s7: #D9A7B5; --s8: #A9B8D0; }
+.mn-root[data-theme="night"] { --s1: #F2B6C6; --s2: #C9788F; --s3: #E8A6B8; --s4: #8F7A83; --s5: #BFA9B2; --s6: #FFFFFF; --s7: #7A5560; --s8: #9B8590; }
 .mn-seg[data-k="prelude"], .mn-seg-item i[data-k="prelude"] { background: var(--s1); }
 .mn-seg[data-k="people"], .mn-seg-item i[data-k="people"] { background: var(--s2); }
 .mn-seg[data-k="now"], .mn-seg-item i[data-k="now"] { background: var(--s3); }
 .mn-seg[data-k="timeline"], .mn-seg-item i[data-k="timeline"] { background: var(--s4); }
 .mn-seg[data-k="open"], .mn-seg-item i[data-k="open"] { background: var(--s5); }
 .mn-seg[data-k="anchors"], .mn-seg-item i[data-k="anchors"] { background: var(--s6); }
+.mn-seg[data-k="recall"], .mn-seg-item i[data-k="recall"] { background: var(--s8); }
 .mn-seg[data-k="recent"], .mn-seg-item i[data-k="recent"] { background: var(--s7); }
 .mn-root[data-theme="night"] .mn-seg { border-right-color: var(--bg); }
 

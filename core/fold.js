@@ -1,9 +1,11 @@
 // 长期记忆折叠:较早的一半胶囊 + 当前长期记忆 → 新的长期记忆。
 // 两步:①事实合并(产出五节 + 要撤下的锚点,前情为忠实草稿);②用原文文风样本润色前情(事实是边界),
 // 润色后本地核对,丢了锚点关键词或缩水太多就退回草稿。
-// 每次折叠往版本链里压一版 { before: 折叠前的 memory 快照, foldedIds },最多 memoryVersions 版:
-//   · 链里的胶囊保留正文,撤销/删楼回退时原样恢复;
-//   · 版本被挤出链尾时,那一版吞掉的胶囊才清空正文,之后可被并成只留范围的占位(points 拼起来保留)。
+// 前情分篇章:每次折叠只为这批新记录写一篇,接在已有篇章之后;已写好的篇章不再改写。
+// 篇章合计超过 preludeBudget 时,折叠提交后再把最早的两篇合并一次(本地核对不过就原样保留,下次再试)。
+// 每次折叠往版本链里压一版 { before: 折叠前的 memory 快照, foldedIds },最多 memoryVersions 版;
+// 篇章合并、整理锚点各自再压一版(foldedIds 为空),所以连续撤销先撤它们,再撤折叠。
+// 折叠后胶囊保留正文(供关键词召回);只有旧版本留下的、没有正文的占位才会被并在一起(points 拼起来保留)。
 
 import {
     beginEvent, countTokens, coverage, ensureData, isStory, liveMeta, peekData, rangeHash, resolveCapsule, scheduleSave,
@@ -11,12 +13,15 @@ import {
 import { getSettings } from './settings.js';
 import { generateJson, generateText, llmOptsFrom } from './llm.js';
 import { cleanMessageText, ensureRegexEngine } from './purify.js';
-import { PROMPT_FOLD_MERGE, PROMPT_FOLD_POLISH, SECTION_KEYS, SECTION_TITLES } from './prompts.js';
+import { PROMPT_ANCHOR_TIDY, PROMPT_CHAPTER_MERGE, PROMPT_FOLD_MERGE, PROMPT_FOLD_POLISH, SECTION_KEYS, SECTION_TITLES } from './prompts.js';
 import { sanitizeOrigins } from './people.js';
 import {
     activeAnchors, anchorsText, applyItems, asText, cloneMemory, composeMemory, dedupeAnchors, deriveAnchors, keysOf, parseSections,
     ITEM_KIND, normalizePoints, pointId, protectedIds, rebuildText, sectionsFromText,
 } from './memory.js';
+import {
+    chaptersEditText, chaptersFromEdit, chaptersOf, chaptersTokens, joinChapters, makeChapterId,
+} from './chapters.js';
 import { refreshInject } from './inject.js';
 import { pushNotice, status } from './bus.js';
 
@@ -78,7 +83,7 @@ function coalesceOlderFolded(ctx, data, keepIds) {
     const out = [];
     for (const c of caps) {
         const last = out[out.length - 1];
-        if (last && last.folded && c.folded && !keepIds.has(last.id) && !keepIds.has(c.id)) {
+        if (last && last.folded && c.folded && !last.text && !c.text && !keepIds.has(last.id) && !keepIds.has(c.id)) { // 有正文的留着供召回,只并旧版留下的空占位
             const a = resolveCapsule(ctx, last), b = resolveCapsule(ctx, c);
             if (a.ti >= 0 && b.fi >= 0) {
                 let j = a.ti + 1;
@@ -98,20 +103,13 @@ function coalesceOlderFolded(ctx, data, keepIds) {
     data.capsules = out;
 }
 
-/** 版本挤出链尾:那一版吞掉的胶囊清空正文(keepFoldedText 开着则保留)。 */
-function trimVersions(data, limit, keepText) {
+/** 版本挤出链尾:只是丢掉最旧的版本(胶囊正文一直保留,供关键词召回)。 */
+function trimVersions(data, limit) {
     const vs = data.versions;
-    while (vs.length > limit) {
-        const old = vs.shift();
-        if (keepText) continue;
-        const still = protectedIds(data);
-        for (const id of old.foldedIds || []) {
-            if (still.has(id)) continue;
-            const cap = data.capsules.find(c => c.id === id);
-            if (cap && cap.folded) { cap.text = ''; cap.tokens = 0; }
-        }
-    }
+    while (vs.length > limit) vs.shift();
 }
+
+const versionLimit = (settings) => Math.max(1, Math.floor(Number(settings.memoryVersions) || 5));
 
 const rangeLabel = (ctx, cap) => {
     const { fi, ti } = resolveCapsule(ctx, cap);
@@ -119,14 +117,23 @@ const rangeLabel = (ctx, cap) => {
     return fi === ti ? `#${fi + 1} ` : `#${fi + 1}–${ti + 1} `;
 };
 
-/** 给合并模型看的锚点行:[id] [类别] 内容;物品再带「来历」和「现状(#楼号)」,没有的部分不写。 */
-function anchorLineWithId(a) {
+/** 锚点出处:`(#起–止 记录标题前 20 字)`;胶囊被并成占位、没有标题的只写楼号,楼层解析不到的只写标题。 */
+function provenance(ctx, a) {
+    const { fi, ti } = a.cap ? resolveCapsule(ctx, a.cap) : { fi: -1, ti: -1 };
+    const range = fi >= 0 && ti >= fi ? (fi === ti ? `#${fi + 1}` : `#${fi + 1}–${ti + 1}`) : '';
+    const title = String(a.cap?.title || '').slice(0, 20);
+    const body = [range, title].filter(Boolean).join(' ');
+    return body ? `(${body})` : '';
+}
+
+/** 给合并模型看的锚点行:[id] [类别] 内容;物品再带「来历」和「现状(#楼号)」,没有的部分不写;末尾括注出处。 */
+function anchorLineWithId(a, ctx) {
     let s = `[${a.id}] [${a.k}] ${a.t}`;
     if (a.k === ITEM_KIND) {
         if (a.d) s += `｜来历:${a.d}`;
         if (a.now?.t) s += `｜现状:${a.now.t}${a.now.at ? `(#${a.now.at})` : ''}`;
     }
-    return s;
+    return s + provenance(ctx, a);
 }
 
 /** 合并输出里的 resolved → { id: 结果 };只认上下文里出现过的 id。 */
@@ -145,8 +152,8 @@ export function normalizeResolved(raw, validIds) {
  * 润色后本地核对:草稿里出现过的锚点关键词(及称呼类的原句)润色稿里必须都还在,且不能比草稿短太多。
  * 返回 null = 通过,否则返回原因。
  */
-export function checkPolish(draft, polished, anchors) {
-    if (polished.length < draft.length * 0.6) return '润色稿比草稿短太多';
+export function checkPolish(draft, polished, anchors, ratio = 0.6) {
+    if (polished.length < draft.length * ratio) return '润色稿比草稿短太多';
     for (const a of anchors) {
         for (const k of keysOf(a)) if (draft.includes(k) && !polished.includes(k)) return `润色稿丢了「${k}」`;
         if (a.k === '称呼' && a.t && draft.includes(a.t) && !polished.includes(a.t)) return `润色稿丢了「${a.t}」`;
@@ -216,6 +223,46 @@ function checkOrigins(ctx, data, people) {
     return sanitizeOrigins(people, floorChecker(ctx, data));
 }
 
+/** 送给模型的已有前情结尾,最多这么多字。 */
+const PRELUDE_TAIL = 800;
+
+/**
+ * 篇章合计超过 preludeBudget 时,把最早的两篇合成一篇(每次折叠最多一次,不循环)。
+ * 合并稿过本地核对(两篇里出现过的锚点关键词都还在、不短于两篇合计的一半);不过或请求失败,两篇原样保留并提示。
+ * 过期(聊天换了、长期记忆在等待期间被改)静默放弃。成功返回 true。
+ */
+async function mergeOldestChapters(ctx, data, settings, opts, meta) {
+    const mem = data.memory;
+    const chs = mem?.chapters;
+    if (!Array.isArray(chs) || chs.length < 2) return false;
+    const budget = Math.max(1000, Number(settings.preludeBudget) || 5000);
+    if (chaptersTokens(chs) <= budget) return false;
+    const [a, b] = chs;
+    let out = '', fail = '';
+    try {
+        out = await generateText(ctx, PROMPT_CHAPTER_MERGE, `【第一篇】\n${a.text}\n\n【第二篇】\n${b.text}`, opts);
+        fail = checkPolish(`${a.text}\n\n${b.text}`, out, activeAnchors(data), 0.5) || '';
+    } catch (err) {
+        fail = '请求失败';
+        console.warn('[Mnemosyne] 前情篇章合并失败', err);
+    }
+    if (liveMeta(ctx) !== meta || data.memory !== mem) return false;
+    if (fail) {
+        console.warn('[Mnemosyne] 前情篇章合并未采用:', fail);
+        pushNotice('前情较长,本次没有合并成功,下次折叠再试');
+        return false;
+    }
+    data.versions.push({ ts: Date.now(), before: cloneMemory(mem), foldedIds: [] });
+    const merged = { id: makeChapterId(), fromId: a.fromId, toId: b.toId, text: out, gen: Math.max(a.gen || 1, b.gen || 1) + 1, ts: Date.now() };
+    const chapters = [merged, ...chs.slice(2)];
+    data.memory = { ...mem, sections: { ...mem.sections, prelude: joinChapters(chapters) }, chapters, ts: Date.now() };
+    rebuildText(data);
+    trimVersions(data, versionLimit(settings));
+    scheduleSave(ctx);
+    refreshInject(ctx);
+    return true;
+}
+
 /** 折叠最早的一半未折叠胶囊。返回 { folded, polished, reason } 或 { skipped }。 */
 export async function foldNow(ctx) {
     const settings = getSettings(ctx);
@@ -232,19 +279,25 @@ export async function foldNow(ctx) {
     const oldSections = oldMem?.sections || sectionsFromText(oldMem?.text);
     batch.forEach(ensurePointIds);
     const oldAnchors = activeAnchors(data);
+    const oldChapters = chaptersOf(oldMem, data.capsules); // 旧数据没有 chapters:内存里把现有前情当一篇
     const newAnchors = deriveAnchors(batch, {}, batchIds);
     const validIds = new Set([...oldAnchors, ...newAnchors].map(a => a.id));
 
     const shiftText = batch.map((c, i) => c.shifts?.length ? `【序号${i + 1}】${c.shifts.map(x => `${x.who}:${x.t}`).join(';')}` : '').filter(Boolean).join('\n');
     const needy = batch.map((c, i) => ({ c, i })).filter(({ c }) => needsPoints(c));
-    const secText = SECTION_KEYS.map((k, i) => `## ${SECTION_TITLES[i]}\n${asText(oldSections[k]) || '(空)'}`).join('\n\n');
+    // 前情一节只给最后一篇的末尾(已有前情只读,用来衔接);其余四节整份给
+    const lastText = oldChapters.length ? asText(oldChapters[oldChapters.length - 1].text) : '';
+    const preludeTail = lastText.length > PRELUDE_TAIL ? lastText.slice(-PRELUDE_TAIL) : lastText;
+    const secText = SECTION_KEYS.map((k, i) => (k === 'prelude'
+        ? `## ${SECTION_TITLES[i]}(已有前情的结尾,只读)\n${preludeTail || '(空)'}`
+        : `## ${SECTION_TITLES[i]}\n${asText(oldSections[k]) || '(空)'}`)).join('\n\n');
     const user = `【当前分节】\n${secText}\n\n`
-        + `【现有锚点】\n${oldAnchors.map(anchorLineWithId).join('\n') || '(无)'}\n\n`
+        + `【现有锚点】\n${oldAnchors.map(a => anchorLineWithId(a, ctx)).join('\n') || '(无)'}\n\n`
         + `【待合并的剧情记录】\n`
         + batch.map((c, i) => `${i + 1}. ${rangeLabel(ctx, c)}${c.title ? c.title + ':' : ''}${c.text}`).join('\n')
         + `\n\n【这批记录的人物变化】\n${shiftText || '(无;请从记录正文里自己判断)'}`
         + (needy.length ? `\n\n【需要补必留点的记录线索】\n${needy.map(({ c, i }) => `【序号${i + 1}】\n${c.clues.map(x => `- ${x}`).join('\n')}`).join('\n')}` : '')
-        + `\n\n【这批记录的新锚点】\n${newAnchors.map(anchorLineWithId).join('\n') || '(无)'}`;
+        + `\n\n【这批记录的新锚点】\n${newAnchors.map(a => anchorLineWithId(a, ctx)).join('\n') || '(无)'}`;
     const merged = await generateJson(ctx, PROMPT_FOLD_MERGE, user, opts);
     const draft = asText(merged.prelude);
     const sections = { prelude: draft };
@@ -297,6 +350,12 @@ export async function foldNow(ctx) {
                 console.warn('[Mnemosyne] 润色失败,使用草稿', err);
             }
         }
+        // 只新增一篇:已写好的篇章原样保留,sections.prelude 是各篇拼起来的派生值
+        const chapters = oldChapters.map(c => ({ ...c }));
+        if (sections.prelude) {
+            chapters.push({ id: makeChapterId(), fromId: batch[0].fromId, toId: batch[batch.length - 1].toId, text: sections.prelude, gen: 1, ts: Date.now() });
+        }
+        sections.prelude = joinChapters(chapters);
         const text = composeMemory(sections, anchorsText(finalAnchors));
         const tokens = await countTokens(ctx, text);
 
@@ -312,16 +371,19 @@ export async function foldNow(ctx) {
         }
         data.versions.push({ ts: Date.now(), before: cloneMemory(oldMem), foldedIds: batch.map(c => c.id) });
         for (const id of Object.keys(itemNow)) if (!live.has(id)) delete itemNow[id]; // 锚点没了,现状一并清掉
-        data.memory = { sections, retired, itemNow, text, tokens, ts: Date.now() };
+        data.memory = { sections, chapters, retired, itemNow, text, tokens, ts: Date.now() };
         committed = true;
-        for (const c of batch) c.folded = true; // 正文保留:链里的胶囊要能原样恢复
-        trimVersions(data, Math.max(1, Math.floor(Number(settings.memoryVersions) || 5)), settings.keepFoldedText);
+        for (const c of batch) c.folded = true; // 正文保留:撤销要能原样恢复,日后也供关键词召回
+        trimVersions(data, versionLimit(settings));
         coalesceOlderFolded(ctx, data, protectedIds(data));
         status.lastFold = { ts: Date.now(), polished, reason };
         if (reason && draft) pushNotice(`本次用了草稿:${reason}`);
         scheduleSave(ctx);
         refreshInject(ctx);
-        return { folded: batch.length, polished, reason };
+        // 篇章超出上限:合并最早的两篇(单独压一版;失败不影响本次折叠)
+        let chapterMerged = false;
+        try { chapterMerged = await mergeOldestChapters(ctx, data, settings, opts, meta); } catch (err) { console.warn('[Mnemosyne] 前情篇章合并出错', err); }
+        return { folded: batch.length, polished, reason, merged: chapterMerged };
     } finally {
         if (!committed) for (const [cap, pts] of prevPoints) cap.points = pts;
     }
@@ -363,13 +425,16 @@ export function undoFold(ctx) {
     return true;
 }
 
-/** 用户手动编辑长期记忆全文(分节部分;「## 锚点」一节由系统派生,编辑里写了也会被忽略)。 */
+/** 用户手动编辑长期记忆全文(分节部分;「## 锚点」一节由系统派生,编辑里写了也会被忽略)。前情按 `### #起–止` 切回篇章。 */
 export async function saveMemoryText(ctx, text) {
     const data = ensureData(ctx);
     const t = String(text || '').trim();
     if (!t) data.memory = null;
     else {
-        const mem = { sections: sectionsFromText(t), retired: data.memory?.retired || {}, itemNow: data.memory?.itemNow || {}, text: '', tokens: 0, ts: Date.now() };
+        const sections = sectionsFromText(t);
+        const chapters = chaptersFromEdit(ctx, sections.prelude, chaptersOf(data.memory, data.capsules));
+        sections.prelude = joinChapters(chapters);
+        const mem = { sections, chapters, retired: data.memory?.retired || {}, itemNow: data.memory?.itemNow || {}, text: '', tokens: 0, ts: Date.now() };
         data.memory = mem;
         rebuildText(data);
         const n = await countTokens(ctx, mem.text);
@@ -400,7 +465,69 @@ export function restoreAnchor(ctx, id) {
     return true;
 }
 
-/** 面板编辑框里用的文本:只含分节,不含锚点。 */
-export function editableMemoryText(mem) {
-    return mem ? composeMemory(mem.sections || sectionsFromText(mem.text), '') : '';
+/** 面板编辑框里用的文本:只含分节,不含锚点;给了 ctx 时前情每篇前面带一行 `### #起–止`。 */
+export function editableMemoryText(mem, ctx = null) {
+    if (!mem) return '';
+    const sections = { ...(mem.sections || sectionsFromText(mem.text)) };
+    if (ctx) {
+        const chs = chaptersOf(mem, peekData(ctx)?.capsules);
+        if (chs.length) sections.prelude = chaptersEditText(ctx, chs);
+    }
+    return composeMemory(sections, '');
+}
+
+// ── 整理锚点:让模型把已经了结的条目撤下(一次调用,锚点太多时分批) ──
+
+const TIDY_BATCH_OVER = 120; // 超过这么多条才分批
+const TIDY_BATCH = 100;
+
+/**
+ * 整理锚点。成功返回 { resolved: 撤下条数, batches: 完成批数, partial: 是否中途失败 };第一批就失败则抛错。
+ * 撤下前把当前长期记忆压一版进版本链(foldedIds 为空),所以「撤销上一次折叠」能撤回这次整理。
+ */
+export async function tidyAnchors(ctx) {
+    const settings = getSettings(ctx);
+    const data = peekData(ctx);
+    const oldMem = data?.memory;
+    if (!oldMem) throw new Error('还没有长期记忆');
+    const meta = ctx.chatMetadata;
+    const opts = llmOptsFrom(settings);
+    beginEvent(ctx);
+    const anchors = activeAnchors(data);
+    if (!anchors.length) return { resolved: 0, batches: 0, partial: false };
+    const sec = oldMem.sections || sectionsFromText(oldMem.text);
+    const head = `【当前状态】\n${asText(sec.now) || '(空)'}\n\n【时间线】\n${asText(sec.timeline) || '(空)'}\n\n【未结事项】\n${asText(sec.open) || '(空)'}`;
+    const size = anchors.length > TIDY_BATCH_OVER ? TIDY_BATCH : anchors.length;
+    const resolved = {};
+    let done = 0, failed = null;
+    for (let i = 0; i < anchors.length; i += size) {
+        const batch = anchors.slice(i, i + size);
+        try {
+            const out = await generateJson(ctx, PROMPT_ANCHOR_TIDY, `${head}\n\n【生效中的锚点】\n${batch.map(a => anchorLineWithId(a, ctx)).join('\n')}`, opts);
+            Object.assign(resolved, normalizeResolved(out.resolved, new Set(batch.map(a => a.id))));
+            done++;
+        } catch (err) {
+            failed = err;
+            break;
+        }
+        if (liveMeta(ctx) !== meta || data.memory !== oldMem) return { skipped: 'stale' };
+    }
+    if (failed && !done) throw failed;
+    if (liveMeta(ctx) !== meta || data.memory !== oldMem) return { skipped: 'stale' };
+    const ids = Object.keys(resolved);
+    if (ids.length) {
+        data.versions.push({ ts: Date.now(), before: cloneMemory(oldMem), foldedIds: [] });
+        const itemNow = { ...(oldMem.itemNow || {}) };
+        for (const id of ids) delete itemNow[id]; // 锚点没了,现状一并清掉
+        data.memory = { ...oldMem, retired: { ...(oldMem.retired || {}), ...resolved }, itemNow, ts: Date.now() };
+        rebuildText(data);
+        trimVersions(data, versionLimit(settings));
+        scheduleSave(ctx);
+        refreshInject(ctx);
+    }
+    if (failed) {
+        console.warn('[Mnemosyne] 整理锚点中途失败', failed);
+        pushNotice('整理到一半失败,已完成的批次已生效,可以再点一次继续');
+    }
+    return { resolved: ids.length, batches: done, partial: !!failed };
 }

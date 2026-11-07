@@ -84,6 +84,20 @@ export function keysOf(a) {
     return out;
 }
 
+const CAP_KEYS_MAX = 6;
+const CAP_KEY_LEN = 20;
+/** 胶囊的召回关键词:去空、去重、每个最长 20 字、最多 6 个;数组或用逗号/顿号/斜杠分隔的字符串都收。 */
+export function normalizeKeys(raw) {
+    const list = Array.isArray(raw) ? raw : (typeof raw === 'string' ? raw.split(/[\/,，、;；\n]/) : []);
+    const out = [];
+    for (const it of list) {
+        const k = String(it ?? '').replace(/\s+/g, ' ').trim().slice(0, CAP_KEY_LEN);
+        if (k && !out.includes(k)) out.push(k);
+        if (out.length >= CAP_KEYS_MAX) break;
+    }
+    return out;
+}
+
 /** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整个胶囊失败)。 */
 export function normalizePoints(raw, max = 5) {
     if (!Array.isArray(raw)) return [];

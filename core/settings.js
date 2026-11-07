@@ -10,7 +10,8 @@ export const DEFAULT_SETTINGS = {
     batchMaxRounds: 12,      // 补建每批轮数上限
     batchBudgetRatio: 0.4,   // 补建每批 token 预算 = maxContext * ratio
     autoMaxRounds: 4,        // 自动记录一次最多处理的积压轮数,更多的交给「补建历史」
-    keepFoldedText: false,
+    preludeBudget: 5000,     // 前情篇章合计超过它(tokens),折叠后把最早的两篇合并成一篇
+    recallMax: 3,            // 每次注入最多召回几条旧记录;0 = 关闭
     injectPosition: 1,       // 0 = IN_PROMPT, 1 = IN_CHAT, 2 = BEFORE_PROMPT
     injectDepth: null,       // null = 跟随保留楼层数
     injectRole: 0,           // 0 system / 1 user / 2 assistant

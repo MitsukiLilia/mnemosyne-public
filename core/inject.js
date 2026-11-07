@@ -1,21 +1,23 @@
-// 注入:长期记忆分节 + 筛选后的锚点 + 未折叠胶囊,经 setExtensionPrompt 放进提示词(或由 {{mnemosyne}} 宏输出)。
-// 拼装顺序:前情 / 人物与关系 / 当前状态 / 时间线 / 未结事项 / 锚点 / 近期记录。
+// 注入:长期记忆分节 + 筛选后的锚点 + 召回的旧记录 + 未折叠胶囊,经 setExtensionPrompt 放进提示词(或由 {{mnemosyne}} 宏输出)。
+// 拼装顺序:前情 / 人物与关系 / 当前状态 / 时间线 / 未结事项 / 锚点 / 相关的旧记录 / 近期记录。
 // 人物与关系只注入在场的和最近提到的;当前状态优先用比长期记忆更新的胶囊快照;每次构建顺带记一份统计(injectStats.last)。
 // 锚点筛选:伏笔、约定、推测没了结就始终注入;其余类别(含物品的来历与现状)只在 key(任一别名)出现于最近几层正文时注入;key 为空的只在锚点总数不多时注入。
-// 预算超了先丢最旧的胶囊,再丢最旧的非伏笔锚点;分节不裁。
-// 每条消息事件都会重算一次,代价只与「最近 N 楼文本 + 锚点数」有关。
+// 旧记录召回:最近几楼文本里出现了某个已折叠胶囊的关键词(本地索引,见 recall.js)就把它的原始记录带回;与锚点筛选共用同一份最近文本。
+// 预算超了先丢召回的旧记录(得分最低的先丢),再丢最旧的胶囊,再丢最旧的非伏笔锚点;分节不裁。
+// 每条消息事件都会重算一次,代价只与「最近 N 楼文本 + 锚点数 + 召回词数」有关。
 
-import { peekData, maxContextSize, isStory, estimateTokens } from './state.js';
+import { peekData, maxContextSize, isStory, estimateTokens, resolveCapsule } from './state.js';
 import { getSettings, effectiveDepth } from './settings.js';
-import { MEMORY_HEADER, PEOPLE_HEADER, POINT_KINDS, SECTION_KEYS, SECTION_TITLES, ANCHOR_TITLE } from './prompts.js';
+import { MEMORY_HEADER, PEOPLE_HEADER, POINT_KINDS, SECTION_KEYS, SECTION_TITLES, ANCHOR_TITLE, RECALL_TITLE, RECALL_HEADER } from './prompts.js';
 import { PEOPLE_LIMIT, parsePeople, presentLine, selectPeople } from './people.js';
 import { activeAnchors, anchorLine, asText, keysOf, sectionsFromText } from './memory.js';
+import { selectRecall } from './recall.js';
 
 export const INJECT_KEY = 'mnemosyne_memory';
 export const MACRO_NAME = 'mnemosyne';
 /** applied:交给酒馆的次数(测试台用);last:上次构建的统计(只放内存,不存档)。 */
 export const injectStats = { applied: 0, last: null };
-export const PART_KEYS = ['prelude', 'people', 'now', 'timeline', 'open', 'anchors', 'recent'];
+export const PART_KEYS = ['prelude', 'people', 'now', 'timeline', 'open', 'anchors', 'recall', 'recent'];
 
 // 锚点行文本与 token 估值按 point 对象缓存(每次收发消息都会重算注入,不重复估算)
 const lineCache = new WeakMap();
@@ -64,8 +66,8 @@ function sectionBlock(mem, tl = 0) {
     return out;
 }
 
-/** 最近 n 层正文楼的原文拼成一个字符串(只算一次)。 */
-function recentText(ctx, n) {
+/** 最近 n 层正文楼的原文(每层一段,只取一次);锚点筛选拼成一个字符串用,召回按段缓存命中。 */
+function recentParts(ctx, n) {
     const chat = ctx.chat || [];
     let left = Math.max(0, Math.floor(n));
     const parts = [];
@@ -75,8 +77,9 @@ function recentText(ctx, n) {
         parts.push(typeof m.mes === 'string' ? m.mes : '');
         left--;
     }
-    return parts.join('\n');
+    return parts;
 }
+const recentText = (ctx, n) => recentParts(ctx, n).join('\n');
 
 /**
  * 锚点筛选:返回要注入的锚点(保持来源顺序)。
@@ -118,6 +121,16 @@ function latestCapNow(data) {
     return '';
 }
 
+/** 召回的旧记录 → 注入行与统计;楼层范围解析不到就只写标题。 */
+function recallLines(ctx, picks) {
+    return picks.map((r) => {
+        const { fi, ti } = resolveCapsule(ctx, r.cap);
+        const range = fi >= 0 && ti >= fi ? (fi === ti ? `#${fi + 1}` : `#${fi + 1}–${ti + 1}`) : '';
+        const line = `· ${range ? range + ' ' : ''}${r.cap.title ? r.cap.title + ':' : ''}${r.cap.text}`;
+        return { id: r.cap.id, range, hits: r.hits, line, tok: estimateTokens(line) + 1 };
+    });
+}
+
 export function buildInjection(ctx, settings) {
     const data = peekData(ctx);
     if (!data) return '';
@@ -126,8 +139,10 @@ export function buildInjection(ctx, settings) {
     const capNow = latestCapNow(data);
     let caps = data.capsules.filter(c => !c.folded && c.text);
     const rejected = [];
-    let recentMemo = null;
-    const getRecent = () => (recentMemo ??= recentText(ctx, Number(settings.anchorRecentFloors) || 8));
+    // 锚点筛选、人物筛选、旧记录召回共用同一份最近文本(只取一次)
+    let partsMemo = null, recentMemo = null;
+    const getParts = () => (partsMemo ??= recentParts(ctx, Number(settings.anchorRecentFloors) || 8));
+    const getRecent = () => (recentMemo ??= getParts().join('\n'));
     let anchors = mem ? selectAnchors(ctx, data, settings, rejected, getRecent) : [];
 
     // 人物动线:只注入在场的和最近提到过的
@@ -152,11 +167,15 @@ export function buildInjection(ctx, settings) {
         now: nowText ? estimateTokens(nowText) : 0, timeline: sec?.toks.timeline || 0, open: sec?.toks.open || 0,
     };
     const secSum = Object.values(secTok).reduce((a, b) => a + b, 0);
-    if (!secSum && !anchors.length && !caps.length) return '';
+    let recall = Number(settings.recallMax) > 0 ? recallLines(ctx, selectRecall(data, settings.recallMax, getParts)) : [];
+    if (!secSum && !anchors.length && !caps.length && !recall.length) return '';
 
     const budget = Math.floor(maxContextSize(ctx) * Math.max(0.01, Number(settings.injectBudgetRatio) || 0.25));
     const aTok = anchors.map(a => lineOf(a).tok);
-    let used = secSum + caps.reduce((a, c) => a + (c.tokens || 0), 0) + aTok.reduce((a, b) => a + b, 0);
+    const recallHeadTok = estimateTokens(`## ${RECALL_TITLE}\n${RECALL_HEADER}`);
+    let used = secSum + caps.reduce((a, c) => a + (c.tokens || 0), 0) + aTok.reduce((a, b) => a + b, 0)
+        + (recall.length ? recallHeadTok + recall.reduce((a, r) => a + r.tok, 0) : 0);
+    while (recall.length && used > budget) { used -= recall.pop().tok; if (!recall.length) used -= recallHeadTok; } // 最先丢召回:得分最低的先走
     let drop = 0;
     while (drop < caps.length && used > budget) { used -= (caps[drop].tokens || 0); drop++; }
     if (drop) caps = caps.slice(drop);
@@ -180,6 +199,11 @@ export function buildInjection(ctx, settings) {
         parts.push('', `## ${ANCHOR_TITLE}`, ...lines);
         anchorTok = anchors.reduce((t, a) => t + lineOf(a).tok, 0);
     }
+    let recallTok = 0;
+    if (recall.length) {
+        parts.push('', `## ${RECALL_TITLE}`, RECALL_HEADER, ...recall.map(r => r.line));
+        recallTok = recallHeadTok + recall.reduce((a, r) => a + r.tok, 0);
+    }
     let recentTok = 0;
     if (caps.length) {
         parts.push('', '## 近期记录');
@@ -187,10 +211,11 @@ export function buildInjection(ctx, settings) {
     }
     parts.push('</mnemosyne_memory>');
 
-    const stat = { prelude: secTok.prelude, people: secTok.people, now: secTok.now, timeline: secTok.timeline, open: secTok.open, anchors: anchorTok, recent: recentTok };
+    const stat = { prelude: secTok.prelude, people: secTok.people, now: secTok.now, timeline: secTok.timeline, open: secTok.open, anchors: anchorTok, recall: recallTok, recent: recentTok };
     injectStats.last = {
         ts: Date.now(), tokens: Object.values(stat).reduce((a, b) => a + b, 0), parts: stat,
         peopleIn, peopleOut, anchorsIn: anchors.map(a => a.id), anchorsOut: rejected,
+        recall: recall.map(r => ({ id: r.id, range: r.range, hits: r.hits })),
     };
     return parts.join('\n');
 }
