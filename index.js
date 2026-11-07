@@ -15,7 +15,7 @@ import { createPanel } from './ui/panel.js';
 import { ICON_MENU } from './ui/icons.js';
 
 // 自报家门:排查「更新了却在跑旧码」时,控制台比对版本号即知真伪。
-export const MNEMO_VERSION = '0.5.1';
+export const MNEMO_VERSION = '0.5.2';
 globalThis.__MNEMO_VERSION = MNEMO_VERSION;
 console.info(`[Mnemosyne] v${MNEMO_VERSION} 已加载`);
 

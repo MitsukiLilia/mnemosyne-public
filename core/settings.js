@@ -5,7 +5,7 @@ export const SETTINGS_KEY = 'mnemosyne';
 export const DEFAULT_SETTINGS = {
     enabled: true,
     autoRecord: false,       // 默认关:装上后不会擅自在每个聊天里花 token、隐藏楼层,用户在首页打开
-    reserve: 3,              // 保留最近 N 层原文
+    reserve: 5,              // 保留最近 N 层原文
     foldThreshold: 4000,     // 未折叠札记 token 合计超过即折叠
     batchMaxRounds: 12,      // 补建每批轮数上限
     batchBudgetRatio: 0.4,   // 补建每批 token 预算 = maxContext * ratio
@@ -20,7 +20,7 @@ export const DEFAULT_SETTINGS = {
     maxPoints: 5,            // 每则札记的必留点上限
     anchorRecentFloors: 8,   // 非伏笔/约定的锚点,key 出现在最近这几层正文里才注入
     memoryVersions: 5,
-    timelineInjectLines: 15, // 时间线只注入最近这么多条(更早的交给前情);0 = 全量       // 折叠版本链保留几版(= 最多可连续撤销几次)
+    timelineInjectLines: 0,  // 时间线注入条数;0 = 全部(时间线像目录,默认整条带上;存储本身折叠时封顶 30 行)
     injectWarnTokens: 12000, // 上次注入超过它,首页的注入卡片标黄
     excludeTags: '',
     profileId: '',

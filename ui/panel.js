@@ -445,7 +445,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             <label class="mn-field"><span class="mn-field-label">注入方式</span>${selectHtml('injectMode', s.injectMode, [['auto', '自动'], ['macro', '宏']])}${s.injectMode === 'macro' ? '<span class="mn-hint">已不再自动注入。把 <code>{{mnemosyne}}</code> 写进预设或角色卡里想放的位置,生成时会替换成长期记忆全文。</span>' : '<span class="mn-hint">自动 = 按下面的位置/深度/角色注入</span>'}</label>
             ${numField('anchorRecentFloors', '锚点参考的最近楼层数', s.anchorRecentFloors, { min: 1, max: 50, hint: '物品、数字、称呼、台词类锚点,相关词出现在这几层正文里才注入' })}
             ${numField('recallMax', '召回旧记录条数', s.recallMax, { min: 0, max: 10, hint: '最近几层提到某段旧记录的关键词时,把那段原始记录带回来;0 = 关闭' })}
-            ${numField('timelineInjectLines', '时间线注入条数', s.timelineInjectLines, { min: 0, max: 200, hint: '只注入最近这么多条时间线,更早的交给前情;0 = 全部注入' })}
+            ${numField('timelineInjectLines', '时间线注入条数', s.timelineInjectLines, { min: 0, max: 200, hint: '0 = 全部注入(默认);填数字则只注入最近这么多条,更早的交给前情' })}
             ${numField('injectWarnTokens', '注入偏长提醒线(tokens)', s.injectWarnTokens, { min: 1000, max: 200000, step: 500, hint: '上次注入超过它,首页的注入卡片会标黄' })}
             ${numField('injectBudgetPct', '预算(占上下文 %)', Math.round(s.injectBudgetRatio * 100), { min: 1, max: 80, hint: '超了先丢最旧的札记,再丢最旧的非伏笔锚点;分节不裁' })}
         </section>
