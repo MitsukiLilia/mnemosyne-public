@@ -1,7 +1,7 @@
-// 状态层:chatMetadata 读写、楼层 id、指纹缓存、胶囊校验。
+// 状态层:chatMetadata 读写、楼层 id、指纹缓存、札记校验。
 // 性能约束全部落在这里:
 //   ① 每条消息的指纹只算一次(WeakMap 缓存,mes 字符串变了才重算);
-//   ② 校验只做受影响的那一部分(编辑 → 覆盖该楼的胶囊;删除 → 删除点之后的胶囊;换聊天 → 整本一次);
+//   ② 校验只做受影响的那一部分(编辑 → 覆盖该楼的札记;删除 → 删除点之后的札记;换聊天 → 整本一次);
 //   ③ 所有写入走 scheduleSave(),同一个 tick 内的多次改动合并成一次 saveMetadataDebounced;
 //   ④ 平时只读,不做整份深拷贝。
 
@@ -236,13 +236,13 @@ export function consumeDeletePoint(ctx) {
     return p;
 }
 
-// ── 胶囊解析与查找 ──
+// ── 札记解析与查找 ──
 
 export function resolveCapsule(ctx, cap) {
     return { fi: idIndex(ctx, cap.fromId), ti: idIndex(ctx, cap.toId) };
 }
 
-/** 当前所有胶囊的范围(按存储顺序),解析不到的 fi/ti 为 -1。 */
+/** 当前所有札记的范围(按存储顺序),解析不到的 fi/ti 为 -1。 */
 export function coverage(ctx, data = peekData(ctx)) {
     if (!data) return [];
     return data.capsules.map(cap => {
@@ -251,7 +251,7 @@ export function coverage(ctx, data = peekData(ctx)) {
     });
 }
 
-/** 把胶囊按楼层顺序插入。胶囊几乎总是追加到末尾,从尾部往前找位置。 */
+/** 把札记按楼层顺序插入。札记几乎总是追加到末尾,从尾部往前找位置。 */
 export function insertCapsule(ctx, data, cap) {
     const fi = idIndex(ctx, cap.fromId);
     let k = data.capsules.length;
@@ -259,7 +259,7 @@ export function insertCapsule(ctx, data, cap) {
     data.capsules.splice(k, 0, cap);
 }
 
-/** 覆盖第 index 层的胶囊(二分,按 fromId 的下标有序)。找不到返回 null。 */
+/** 覆盖第 index 层的札记(二分,按 fromId 的下标有序)。找不到返回 null。 */
 export function findCapsuleCovering(ctx, data, index) {
     const caps = data.capsules;
     let lo = 0, hi = caps.length - 1, best = -1;
@@ -293,16 +293,16 @@ function checkCapsule(ctx, cap) {
 /**
  * 事件后的统一处理入口。返回 { invalidated, foldedTouched, notices, rolledBack, pointsDropped, changed },
  * 调用方负责取消隐藏、重算注入、弹通知。
- * 已折叠胶囊被删时分两种:
- *   ① 它在版本链里(text 还保留):长期记忆回退到吞掉它的那一版之前,之后吞进去的胶囊恢复成未折叠;
- *   ② 它是已并成占位的老胶囊:照旧收缩范围,再把来源楼已经不存在的 points 丢掉。
+ * 已折叠札记被删时分两种:
+ *   ① 它在版本链里(text 还保留):长期记忆回退到吞掉它的那一版之前,之后吞进去的札记恢复成未折叠;
+ *   ② 它是已并成占位的老札记:照旧收缩范围,再把来源楼已经不存在的 points 丢掉。
  */
 function applyChecks(ctx, results, point) {
     const data = peekData(ctx);
     const out = { invalidated: [], foldedTouched: [], notices: [], changed: false, rolledBack: false, pointsDropped: 0 };
     if (!data) return out;
 
-    // ① 先处理回退:被删的链内胶囊 → 取最早的那一版
+    // ① 先处理回退:被删的链内札记 → 取最早的那一版
     let minJ = -1;
     const goneIds = new Set();
     for (const res of results) {
@@ -319,7 +319,7 @@ function applyChecks(ctx, results, point) {
         out.notices.push('长期记忆已回退到较早版本,被删楼层之后的记录会重新整理');
     }
 
-    // ② 其余按胶囊逐个处理(回退后恢复成未折叠的胶囊走未折叠分支:失效就作废重记)
+    // ② 其余按札记逐个处理(回退后恢复成未折叠的札记走未折叠分支:失效就作废重记)
     for (const res of results) {
         if (res.status === 'ok') continue;
         const cap = res.cap;
@@ -360,7 +360,7 @@ function pruneDeadPoints(ctx, cap) {
     return n;
 }
 
-/** 已折叠胶囊的端点被删:能修就修(收缩到幸存的楼),修不了返回 false 交调用方移除。 */
+/** 已折叠札记的端点被删:能修就修(收缩到幸存的楼),修不了返回 false 交调用方移除。 */
 function repairFolded(ctx, cap, res, point) {
     const chat = ctx.chat;
     let { fi, ti } = res;
@@ -380,7 +380,7 @@ function repairFolded(ctx, cap, res, point) {
     return true;
 }
 
-/** 编辑/swipe 第 index 层:只核对覆盖这一层的那个胶囊。 */
+/** 编辑/swipe 第 index 层:只核对覆盖这一层的那则札记。 */
 export function verifyFloor(ctx, index) {
     const data = peekData(ctx);
     const msg = ctx.chat[index];
@@ -390,7 +390,7 @@ export function verifyFloor(ctx, index) {
     return applyChecks(ctx, [checkCapsule(ctx, hit.cap)], index);
 }
 
-/** 删除:point 之后的胶囊才需要核对;端点缺失的直接判失效。 */
+/** 删除:point 之后的札记才需要核对;端点缺失的直接判失效。 */
 export function verifyAfter(ctx, point) {
     const data = peekData(ctx);
     if (!data || !data.capsules.length) return applyChecks(ctx, [], point);

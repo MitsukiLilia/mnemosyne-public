@@ -1,4 +1,4 @@
-// 面板:Shadow DOM 隔离,手机优先(宽 ≤ 480 全屏,桌面居中浮窗)。四页:首页 / 胶囊 / 长期记忆 / 设置。
+// 面板:Shadow DOM 隔离,手机优先(宽 ≤ 480 全屏,桌面居中浮窗)。四页:首页 / 札记 / 长期记忆 / 设置。
 // 面板关着时不渲染、不订阅 DOM、不跑任何更新;状态变化通过 bus 订阅,开着才重绘(rAF 合并)。
 
 import { beginEvent, peekData, resolveCapsule, scheduleSave, summary } from '../core/state.js';
@@ -38,7 +38,7 @@ const pearl = '<span class="mn-pearl" aria-hidden="true"></span>';
 
 const TABS = [
     { id: 'home', label: '首页', icon: I.ICON_HOME },
-    { id: 'capsules', label: '胶囊', icon: I.ICON_CAPSULE },
+    { id: 'capsules', label: '札记', icon: I.ICON_NOTE },
     { id: 'memory', label: '长期记忆', icon: I.ICON_BOOK },
     { id: 'settings', label: '设置', icon: I.ICON_GEAR },
 ];
@@ -79,7 +79,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         const lastTok = injectStats.last ? fmtNum(injectStats.last.tokens) : '—';
         return `<section class="mn-stats">
             <div class="mn-stat"><div class="mn-stat-num">${sm.coveredTo >= 0 ? sm.coveredTo + 1 : 0}</div><div class="mn-stat-label">已记录到第几楼</div></div>
-            <div class="mn-stat"><div class="mn-stat-num">${sm.capsules}</div><div class="mn-stat-label">胶囊数</div></div>
+            <div class="mn-stat"><div class="mn-stat-num">${sm.capsules}</div><div class="mn-stat-label">札记数</div></div>
             <div class="mn-stat"><div class="mn-stat-num">${lastTok}</div><div class="mn-stat-label">上次注入</div></div>
             <div class="mn-stat"><div class="mn-stat-num">${sm.hidden}</div><div class="mn-stat-label">已隐藏楼层</div></div>
             <span class="mn-stats-spark">${I.DECO_SPARK}</span>
@@ -229,9 +229,9 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         const caps = data ? data.capsules : [];
         const live = caps.filter(x => !x.folded);
         const folded = caps.length - live.length;
-        let html = pageHead('胶囊', `${live.length} 个未折叠${folded ? ` · ${folded} 个已并入长期记忆` : ''}`);
+        let html = pageHead('札记', `${live.length} 则未折叠${folded ? ` · ${folded} 则已并入长期记忆` : ''}`);
         if (!live.length) {
-            html += `<section class="mn-empty"><p>还没有胶囊。聊下去会自动记录,长聊天可以在首页点「补建历史」。</p></section>`;
+            html += `<section class="mn-empty"><p>还没有札记。聊下去会自动记录,长聊天可以在首页点「补建历史」。</p></section>`;
             return html;
         }
         const list = live.slice().reverse().slice(0, ui.capLimit);
@@ -277,7 +277,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         const gone = retiredAnchors(data);
         if (!list.length && !gone.length) return '';
         let html = `<section class="mn-sec mn-anchors">${secHead('锚点')}<p class="mn-sec-sub">${list.length} 条生效</p>
-            <p class="mn-hint">折叠时由胶囊的必留点汇成,润色改不动它们。伏笔、约定、推测始终注入(推测会标「未证实」),其余类别在相关词出现于最近几层时才注入。物品会带上来历和现状,同一件东西会被合并成一条。</p>
+            <p class="mn-hint">折叠时由札记的必留点汇成,润色改不动它们。伏笔、约定、推测始终注入(推测会标「未证实」),其余类别在相关词出现于最近几层时才注入。物品会带上来历和现状,同一件东西会被合并成一条。</p>
             <div class="mn-btn-row"><button class="mn-btn" data-action="tidy-anchors" ${status.busy || !list.length ? 'disabled' : ''}>${I.ICON_RETIRE}<span>${status.busy === 'tidy' ? '整理中……' : '整理锚点'}</span></button></div>
             <p class="mn-hint">点「整理锚点」可以让模型把已经了结的条目撤下,撤错了可以恢复,也可以用「撤销上一次折叠」整体撤回。</p>`;
         if (!list.length) html += '<p class="mn-dim">(暂无生效的锚点)</p>';
@@ -366,7 +366,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         const nv = data?.versions?.length || 0;
         const editLink = ui.editingMem ? '' : `<button class="mn-linkbtn mn-edit-link" data-action="edit-mem" aria-label="编辑" title="编辑">${I.ICON_PEN}</button>`;
         let html = pageHead('长期记忆', `${mem ? `${mem.text.length} 字 · ${fmtTime(mem.ts)}` : '尚未生成'}`, editLink);
-        html += `<p class="mn-sec-sub mn-mem-meta">未折叠的胶囊 ${un} / ${s.foldThreshold} tokens,超过后会自动折叠最早的一半 · 可撤销 ${nv} 次</p>`;
+        html += `<p class="mn-sec-sub mn-mem-meta">未折叠的札记 ${un} / ${s.foldThreshold} tokens,超过后会自动折叠最早的一半 · 可撤销 ${nv} 次</p>`;
         if (status.lastFold && !status.lastFold.polished && mem) {
             html += `<div class="mn-notes"><div class="mn-note"><span class="mn-note-ico">${I.ICON_WARN}</span><div class="mn-note-body"><p>本次用了草稿${status.lastFold.reason ? `:${esc(status.lastFold.reason)}` : ''}</p><small>${fmtTime(status.lastFold.ts)} · 前情没有经过润色,事实和锚点完整</small></div></div></div>`;
         }
@@ -388,7 +388,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             });
             html += anchorsBlock(c, data);
         } else {
-            html += `<section class="mn-empty"><p>长期记忆还是空的。未折叠的胶囊超过阈值后会自动生成,也可以点下面的「立即折叠」。</p></section>`;
+            html += `<section class="mn-empty"><p>长期记忆还是空的。未折叠的札记超过阈值后会自动生成,也可以点下面的「立即折叠」。</p></section>`;
         }
         if (!ui.editingMem) {
             html += `<div class="mn-btn-row mn-btn-row-wrap">
@@ -427,10 +427,10 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         </section>
         <section class="mn-group">${secHead('记录')}
             ${numField('reserve', '保留楼层数', s.reserve, { min: 0, max: 50, hint: '最近这几层始终保留原文,不记录、不隐藏' })}
-            ${numField('foldThreshold', '折叠阈值(tokens)', s.foldThreshold, { min: 500, step: 100, hint: '未折叠胶囊合计超过它就折叠最早的一半' })}
+            ${numField('foldThreshold', '折叠阈值(tokens)', s.foldThreshold, { min: 500, step: 100, hint: '未折叠札记合计超过它就折叠最早的一半' })}
             ${numField('preludeBudget', '前情上限(tokens)', s.preludeBudget, { min: 1000, max: 50000, step: 500, hint: '前情超过它时,把最早的两篇合并成一篇;越近的篇章保留越多细节' })}
             ${numField('batchMaxRounds', '补建每批轮数上限', s.batchMaxRounds, { min: 1, max: 40 })}
-            ${numField('maxPoints', '每个胶囊的必留点上限', s.maxPoints, { min: 0, max: 10, hint: '台词、物品、数字、称呼、约定、伏笔;0 = 不收' })}
+            ${numField('maxPoints', '每则札记的必留点上限', s.maxPoints, { min: 0, max: 10, hint: '台词、物品、数字、称呼、约定、伏笔;0 = 不收' })}
             ${numField('memoryVersions', '折叠版本保留数', s.memoryVersions, { min: 1, max: 10, hint: '可连续撤销的次数;前情篇章合并、整理锚点也各占一版' })}
             <div class="mn-field"><span class="mn-field-label">额外剔除的标签</span>
                 <input class="mn-input" type="text" data-set="excludeTags" value="${esc(s.excludeTags)}" placeholder="逗号分隔,如 status, panel" spellcheck="false">
@@ -447,7 +447,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             ${numField('recallMax', '召回旧记录条数', s.recallMax, { min: 0, max: 10, hint: '最近几层提到某段旧记录的关键词时,把那段原始记录带回来;0 = 关闭' })}
             ${numField('timelineInjectLines', '时间线注入条数', s.timelineInjectLines, { min: 0, max: 200, hint: '只注入最近这么多条时间线,更早的交给前情;0 = 全部注入' })}
             ${numField('injectWarnTokens', '注入偏长提醒线(tokens)', s.injectWarnTokens, { min: 1000, max: 200000, step: 500, hint: '上次注入超过它,首页的注入卡片会标黄' })}
-            ${numField('injectBudgetPct', '预算(占上下文 %)', Math.round(s.injectBudgetRatio * 100), { min: 1, max: 80, hint: '超了先丢最旧的胶囊,再丢最旧的非伏笔锚点;分节不裁' })}
+            ${numField('injectBudgetPct', '预算(占上下文 %)', Math.round(s.injectBudgetRatio * 100), { min: 1, max: 80, hint: '超了先丢最旧的札记,再丢最旧的非伏笔锚点;分节不裁' })}
         </section>
         <section class="mn-group">${secHead('生成模型')}
             <label class="mn-field"><span class="mn-field-label">连接</span>${selectHtml('profileId', s.profileId, [['', '跟随酒馆当前连接'], ...profiles.map(p => [p.id, p.name])])}<span class="mn-hint">指定 Connection Profile 后,记录和折叠不占用主连接</span></label>
@@ -461,7 +461,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         </section>
         <section class="mn-group">${secHead('数据')}
             <div class="mn-field"><span class="mn-field-label">清除这个聊天的记忆</span>
-                <span class="mn-hint">删掉胶囊、长期记忆、锚点、折叠版本和补建进度,并恢复插件隐藏的楼层。聊天正文、这个聊天的「摘要来源」和设置页的所有选项(包括独立 API)都不受影响。清除后可以重新补建。</span>
+                <span class="mn-hint">删掉札记、长期记忆、锚点、折叠版本和补建进度,并恢复插件隐藏的楼层。聊天正文、这个聊天的「摘要来源」和设置页的所有选项(包括独立 API)都不受影响。清除后可以重新补建。</span>
                 <div class="mn-btn-row"><button class="mn-btn mn-btn-danger" data-action="clear-data" ${status.busy || !peekData(c) ? 'disabled' : ''}>${I.ICON_TRASH}<span>${ui.confirmClear ? '再点一次确认清除' : '清除数据'}</span></button></div></div>
         </section>`;
     }
@@ -579,7 +579,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             case 'toggle-akind': { const k = el.dataset.kind; ui.anchorOpen.has(k) ? ui.anchorOpen.delete(k) : ui.anchorOpen.add(k); render(); return; }
             case 'fold-now': {
                 toast('折叠中……');
-                try { const r = await foldNowExclusive(c); toast(r?.folded ? `已折叠 ${r.folded} 个胶囊${r.polished ? '' : '(本次用了草稿)'}` : '没有折叠'); }
+                try { const r = await foldNowExclusive(c); toast(r?.folded ? `已折叠 ${r.folded} 则札记${r.polished ? '' : '(本次用了草稿)'}` : '没有折叠'); }
                 catch (err) { toast('折叠失败:' + (err?.message || err)); }
                 render(); return;
             }

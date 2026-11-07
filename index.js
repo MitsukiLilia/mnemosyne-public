@@ -15,7 +15,7 @@ import { createPanel } from './ui/panel.js';
 import { ICON_MENU } from './ui/icons.js';
 
 // 自报家门:排查「更新了却在跑旧码」时,控制台比对版本号即知真伪。
-export const MNEMO_VERSION = '0.5.0';
+export const MNEMO_VERSION = '0.5.1';
 globalThis.__MNEMO_VERSION = MNEMO_VERSION;
 console.info(`[Mnemosyne] v${MNEMO_VERSION} 已加载`);
 
@@ -34,7 +34,7 @@ let panel = null;
 let fab = null;
 
 // ── 校验结果的统一收尾 ──
-// 只做:取消失效胶囊的隐藏、提示、重算注入、排一次保存、催自动记录重新记。
+// 只做:取消失效札记的隐藏、提示、重算注入、排一次保存、催自动记录重新记。
 function handleVerify(ctx, res, label) {
     if (!res.changed) { inject.refreshInject(ctx); return; } // 没坏也要重算:锚点筛选依赖最近几楼
     const s = getSettings(ctx);
@@ -85,7 +85,7 @@ function onDeleted() {
     beginEvent(ctx);
     const point = consumeDeletePoint(ctx);
     const res = verifyAfter(ctx, point);
-    if (!res.changed) hide.reconcile(ctx, getSettings(ctx).reserve); // 胶囊都没坏也要整理:聊天变短,保留区退回到已隐藏的楼
+    if (!res.changed) hide.reconcile(ctx, getSettings(ctx).reserve); // 札记都没坏也要整理:聊天变短,保留区退回到已隐藏的楼
     handleVerify(ctx, res, `第 ${point + 1} 楼附近有楼层被删除`);
 }
 function onChatChanged() {

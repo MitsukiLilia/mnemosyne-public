@@ -1,11 +1,11 @@
-// 长期记忆折叠:较早的一半胶囊 + 当前长期记忆 → 新的长期记忆。
+// 长期记忆折叠:较早的一半札记 + 当前长期记忆 → 新的长期记忆。
 // 两步:①事实合并(产出五节 + 要撤下的锚点,前情为忠实草稿);②用原文文风样本润色前情(事实是边界),
 // 润色后本地核对,丢了锚点关键词或缩水太多就退回草稿。
 // 前情分篇章:每次折叠只为这批新记录写一篇,接在已有篇章之后;已写好的篇章不再改写。
 // 篇章合计超过 preludeBudget 时,折叠提交后再把最早的两篇合并一次(本地核对不过就原样保留,下次再试)。
 // 每次折叠往版本链里压一版 { before: 折叠前的 memory 快照, foldedIds },最多 memoryVersions 版;
 // 篇章合并、整理锚点各自再压一版(foldedIds 为空),所以连续撤销先撤它们,再撤折叠。
-// 折叠后胶囊保留正文(供关键词召回);只有旧版本留下的、没有正文的占位才会被并在一起(points 拼起来保留)。
+// 折叠后札记保留正文(供关键词召回);只有旧版本留下的、没有正文的占位才会被并在一起(points 拼起来保留)。
 
 import {
     beginEvent, countTokens, coverage, ensureData, isStory, liveMeta, peekData, rangeHash, resolveCapsule, scheduleSave,
@@ -103,7 +103,7 @@ function coalesceOlderFolded(ctx, data, keepIds) {
     data.capsules = out;
 }
 
-/** 版本挤出链尾:只是丢掉最旧的版本(胶囊正文一直保留,供关键词召回)。 */
+/** 版本挤出链尾:只是丢掉最旧的版本(札记正文一直保留,供关键词召回)。 */
 function trimVersions(data, limit) {
     const vs = data.versions;
     while (vs.length > limit) vs.shift();
@@ -117,7 +117,7 @@ const rangeLabel = (ctx, cap) => {
     return fi === ti ? `#${fi + 1} ` : `#${fi + 1}–${ti + 1} `;
 };
 
-/** 锚点出处:`(#起–止 记录标题前 20 字)`;胶囊被并成占位、没有标题的只写楼号,楼层解析不到的只写标题。 */
+/** 锚点出处:`(#起–止 记录标题前 20 字)`;札记被并成占位、没有标题的只写楼号,楼层解析不到的只写标题。 */
 function provenance(ctx, a) {
     const { fi, ti } = a.cap ? resolveCapsule(ctx, a.cap) : { fi: -1, ti: -1 };
     const range = fi >= 0 && ti >= fi ? (fi === ti ? `#${fi + 1}` : `#${fi + 1}–${ti + 1}`) : '';
@@ -163,12 +163,12 @@ export function checkPolish(draft, polished, anchors, ratio = 0.6) {
 
 const maxPointsOf = (settings) => Math.max(0, Math.min(10, Math.floor(Number(settings.maxPoints) || 0)));
 
-/** 提取模式产生的胶囊:没有必留点、但存了原文线索 —— 折叠时请模型补挑。 */
+/** 提取模式产生的札记:没有必留点、但存了原文线索 —— 折叠时请模型补挑。 */
 const needsPoints = (c) => !(c.points?.length) && Array.isArray(c.clues) && c.clues.length > 0;
 
 /**
- * 合并输出里的 newPoints → Map(胶囊 → 规范化的新点)。只认待补的胶囊;
- * 台词必须原样出现在该胶囊的线索里,不在的丢掉;物品的来历 d 至少一半二字组要出现在线索里,否则只丢 d;每个胶囊不超过 maxPoints 条。
+ * 合并输出里的 newPoints → Map(札记 → 规范化的新点)。只认待补的札记;
+ * 台词必须原样出现在该札记的线索里,不在的丢掉;物品的来历 d 至少一半二字组要出现在线索里,否则只丢 d;每则札记不超过 maxPoints 条。
  */
 // 台词核对只看原话本身:模型常带说话人前缀(「乙:『……』」),线索里只有引号内那段。
 // 取引号内的文字(没有引号就去掉「名字:」前缀),去掉空白和标点后,必须是某条线索的子串。
@@ -211,14 +211,14 @@ export function normalizeNewPoints(raw, batch, maxPoints = 5) {
     return out;
 }
 
-/** 楼号是否合法:在聊天长度内,且落在某个胶囊覆盖范围里(来由、物品现状共用)。 */
+/** 楼号是否合法:在聊天长度内,且落在某则札记覆盖范围里(来由、物品现状共用)。 */
 function floorChecker(ctx, data) {
     const ranges = coverage(ctx, data).filter(r => r.fi >= 0 && r.ti >= r.fi).map(r => [r.fi + 1, r.ti + 1]);
     const len = ctx.chat.length;
     return (n) => n >= 1 && n <= len && ranges.some(([a, b]) => n >= a && n <= b);
 }
 
-/** 来由里的 #楼号:超出聊天长度、或不落在任何胶囊覆盖范围内的去掉。 */
+/** 来由里的 #楼号:超出聊天长度、或不落在任何札记覆盖范围内的去掉。 */
 function checkOrigins(ctx, data, people) {
     return sanitizeOrigins(people, floorChecker(ctx, data));
 }
@@ -263,12 +263,12 @@ async function mergeOldestChapters(ctx, data, settings, opts, meta) {
     return true;
 }
 
-/** 折叠最早的一半未折叠胶囊。返回 { folded, polished, reason } 或 { skipped }。 */
+/** 折叠最早的一半未折叠札记。返回 { folded, polished, reason } 或 { skipped }。 */
 export async function foldNow(ctx) {
     const settings = getSettings(ctx);
     const data = ensureData(ctx);
     const unfolded = data.capsules.filter(c => !c.folded);
-    if (!unfolded.length) throw new Error('没有可折叠的胶囊');
+    if (!unfolded.length) throw new Error('没有可折叠的札记');
     const batch = unfolded.slice(0, Math.max(1, Math.floor(unfolded.length / 2)));
     const batchIds = new Set(batch.map(c => c.id));
     const meta = ctx.chatMetadata;
@@ -305,7 +305,7 @@ export async function foldNow(ctx) {
     if (!SECTION_KEYS.some(k => sections[k])) throw new Error('模型没有返回可用的长期记忆');
     sections.people = checkOrigins(ctx, data, sections.people);
     const resolved = normalizeResolved(merged.resolved, validIds);
-    // 补挑的必留点:先临时挂到胶囊上,再派生锚点、去重;没提交成功就原样撤回
+    // 补挑的必留点:先临时挂到札记上,再派生锚点、去重;没提交成功就原样撤回
     const added = normalizeNewPoints(merged.newPoints, batch, maxPointsOf(settings));
     const prevPoints = new Map();
     for (const [cap, pts] of added) {
@@ -359,7 +359,7 @@ export async function foldNow(ctx) {
         const text = composeMemory(sections, anchorsText(finalAnchors));
         const tokens = await countTokens(ctx, text);
 
-        // 等待期间聊天/胶囊可能变了:不再是同一批就放弃,留给下一次
+        // 等待期间聊天/札记可能变了:不再是同一批就放弃,留给下一次
         if (liveMeta(ctx) !== meta || batch.some(c => c.folded || !data.capsules.includes(c)) || data.memory !== oldMem) {
             return { skipped: 'stale' };
         }
@@ -408,7 +408,7 @@ export async function foldWhileNeeded(ctx) {
     return n;
 }
 
-/** 撤销最近一次折叠(可连续撤销到链空):长期记忆回到那一版之前,那一版吞掉的胶囊恢复成未折叠。 */
+/** 撤销最近一次折叠(可连续撤销到链空):长期记忆回到那一版之前,那一版吞掉的札记恢复成未折叠。 */
 export function undoFold(ctx) {
     const data = peekData(ctx);
     const v = data?.versions?.[data.versions.length - 1];

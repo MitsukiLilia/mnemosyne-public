@@ -1,7 +1,7 @@
-// 关键词召回旧记录:折叠后胶囊保留正文,日后剧情重新提到那一段时,把原始记录带回注入。
+// 关键词召回旧记录:折叠后札记保留正文,日后剧情重新提到那一段时,把原始记录带回注入。
 // 纯本地匹配,不调模型、不用向量:
-//   · 索引 = 已折叠且有正文的胶囊的候选词(cap.keys + 它 points 的 key 别名);按数据变化缓存,数据不变不重建;
-//   · 太常见的词(出现在超过 25% 的已折叠胶囊里,且这类胶囊不少于 8 个)整体丢掉,防止主要人物名每轮都命中;
+//   · 索引 = 已折叠且有正文的札记的候选词(cap.keys + 它 points 的 key 别名);按数据变化缓存,数据不变不重建;
+//   · 太常见的词(出现在超过 25% 的已折叠札记里,且这类札记不少于 8 个)整体丢掉,防止主要人物名每轮都命中;
 //   · 匹配只看「最近几楼文本」(与锚点筛选共用同一次取文本),命中词按单层楼缓存。
 
 import { keysOf } from './memory.js';
@@ -11,12 +11,12 @@ export const recallStats = { builds: 0 };
 const MIN_WORD = 2;          // 单字词几乎每轮都出现,不收
 const COMMON_RATIO = 0.25;
 const COMMON_MIN_CAPS = 8;
-const RARE_SHARE = 3;        // 只被 1～3 个胶囊共享的词算 2 分
+const RARE_SHARE = 3;        // 只被 1～3 则札记共享的词算 2 分
 const MIN_SCORE = 2;
 
 const cache = new WeakMap();
 
-/** 索引:{ entries: [{ cap, words }], df: Map<词, 共享它的胶囊数>, words: [词...] }。 */
+/** 索引:{ entries: [{ cap, words }], df: Map<词, 共享它的札记数>, words: [词...] }。 */
 export function buildRecallIndex(data) {
     const caps = data.capsules;
     let folded = 0, firstF = '', lastF = '';
@@ -64,7 +64,7 @@ function hitsOfPart(idx, text) {
 
 /**
  * 选出要召回的旧记录:[{ cap, score, hits: [命中的词] }],得分高的在前,同分更早的在前,最多 max 条。
- * 得分 = 命中的不同词数,只被 1～3 个胶囊共享的词算 2 分;得分 ≥ 2 才入选。
+ * 得分 = 命中的不同词数,只被 1～3 则札记共享的词算 2 分;得分 ≥ 2 才入选。
  * getParts 返回最近几层楼的文本数组(与锚点筛选共用同一次取文本)。
  */
 export function selectRecall(data, max, getParts) {

@@ -41,7 +41,7 @@
             <button id="btnOpen">打开 / 关闭面板</button><br>
             <label>主题 <select id="selTheme"><option value="auto">跟随系统</option><option value="day">日间</option><option value="night">夜间</option></select></label>
             <div>页面:
-                <button data-goto="home">首页</button><button data-goto="capsules">胶囊</button><button data-goto="memory">长期记忆</button><button data-goto="settings">设置</button>
+                <button data-goto="home">首页</button><button data-goto="capsules">札记</button><button data-goto="memory">长期记忆</button><button data-goto="settings">设置</button>
             </div>
             <div>进度演示:
                 <button data-prog="running">补建中</button><button data-prog="failed">失败</button><button data-prog="idle">空闲</button>
@@ -268,16 +268,16 @@ const T = (name, fn) => tests.push({ name, fn });
 T('T1 自动记录:新一轮移出保留区', async () => {
     await resetWorld({ reserve: 3 });
     await speak(1); await speak(2);
-    eq('T1.1 保留区内不生成胶囊', (data()?.capsules.length ?? 0), 0);
+    eq('T1.1 保留区内不生成札记', (data()?.capsules.length ?? 0), 0);
     eq('T1.2 保留区内不发记录请求', fx.calls.batch, 0);
     const saves0 = counters.saves;
     await speak(3);
     const d = data();
-    eq('T1.3 生成 1 个胶囊', d.capsules.length, 1);
+    eq('T1.3 生成 1 则札记', d.capsules.length, 1);
     check('T1.4 被覆盖的两层被隐藏、其余不动', chat[0].is_system && chat[1].is_system && !chat[2].is_system && !chat[3].is_system, JSON.stringify(chat.map(m => m.is_system)));
     eq('T1.5 hiddenIds 登记 2 层', d.hiddenIds.length, 2);
-    check('T1.6 注入内容含胶囊文本与外层标签', ext.last?.value.includes('<mnemosyne_memory>') && ext.last.value.includes(d.capsules[0].text), ext.last?.value);
-    eq('T1.7 本批(胶囊+隐藏)只排 1 次保存', counters.saves - saves0, 1);
+    check('T1.6 注入内容含札记文本与外层标签', ext.last?.value.includes('<mnemosyne_memory>') && ext.last.value.includes(d.capsules[0].text), ext.last?.value);
+    eq('T1.7 本批(札记+隐藏)只排 1 次保存', counters.saves - saves0, 1);
     check('T1.8 注入参数:聊天内/深度=保留楼层数/system', ext.last?.position === 1 && ext.last.depth === 3 && ext.last.role === 0, JSON.stringify(ext.last));
     check('T1.9 楼层 id 写入 message.extra', !!chat[0].extra.mnemo_id && chat[0].extra.mnemo_id === d.capsules[0].fromId && chat[1].extra.mnemo_id === d.capsules[0].toId);
     check('T1.10 范围指纹已记录', typeof d.capsules[0].rangeHash === 'string' && d.capsules[0].rangeHash.length > 0);
@@ -312,7 +312,7 @@ T('T2 补建历史:分批/停止/继续', async () => {
     const saves0 = counters.saves;
     const r1 = await backfillAll();
     eq('T2.1 中途停止 outcome=stopped', r1.outcome, 'stopped');
-    eq('T2.2 第一批产出 12 个胶囊', data().capsules.length, 12);
+    eq('T2.2 第一批产出 12 则札记', data().capsules.length, 12);
     check('T2.3 停止后不再运行', status.backfill.running === false && data().backfill.running === false);
     // 继续
     fx.onBatch = async (n) => { if (n === 2) { api.handlers.onReceived(); } }; // 补建期间来新消息:自动记录必须暂停
@@ -320,7 +320,7 @@ T('T2 补建历史:分批/停止/继续', async () => {
     unsub();
     eq('T2.4 继续后完成 outcome=finished', r2.outcome, 'finished');
     const d = data();
-    eq('T2.5 共 38 个胶囊', d.capsules.length, 38);
+    eq('T2.5 共 38 则札记', d.capsules.length, 38);
     eq('T2.6 总共 4 次批请求(12+12+12+2)', fx.calls.batch, 4);
     const rs = d.capsules.map(c => idxOfCap(c)).sort((a, b) => a.fi - b.fi);
     let contiguous = true;
@@ -358,9 +358,9 @@ async function setupCaps(rounds = 12, extra = {}) {
     await backfillAll();
 }
 
-T('T3 编辑/swipe:只作废覆盖该楼的胶囊', async () => {
+T('T3 编辑/swipe:只作废覆盖该楼的札记', async () => {
     await setupCaps(12);
-    eq('T3.0 前置:10 个胶囊', data().capsules.length, 10);
+    eq('T3.0 前置:10 则札记', data().capsules.length, 10);
     S({ autoRecord: false });
     const ids = data().capsules.map(c => c.id);
     const checks0 = stateMod.stats.capsuleChecks;
@@ -368,16 +368,16 @@ T('T3 编辑/swipe:只作废覆盖该楼的胶囊', async () => {
     await eventSource.emit(eventTypes.MESSAGE_EDITED, 6);
     const d = data();
     eq('T3.1 作废 1 个,剩 9 个', d.capsules.length, 9);
-    eq('T3.2 其他胶囊原封不动', d.capsules.map(c => c.id).join(), ids.filter((_, i) => i !== 3).join());
-    check('T3.3 被作废胶囊覆盖的楼取消隐藏,其余仍隐藏', !chat[6].is_system && !chat[7].is_system && chat[4].is_system && chat[8].is_system);
+    eq('T3.2 其他札记原封不动', d.capsules.map(c => c.id).join(), ids.filter((_, i) => i !== 3).join());
+    check('T3.3 被作废札记覆盖的楼取消隐藏,其余仍隐藏', !chat[6].is_system && !chat[7].is_system && chat[4].is_system && chat[8].is_system);
     eq('T3.4 hiddenIds 同步减少', d.hiddenIds.length, 18);
-    eq('T3.5 编辑只核对了覆盖该楼的 1 个胶囊', stateMod.stats.capsuleChecks - checks0, 1);
+    eq('T3.5 编辑只核对了覆盖该楼的 1 则札记', stateMod.stats.capsuleChecks - checks0, 1);
     check('T3.6 提示「第 7 楼变了,对应记录已作废,将重新记录」', status.notices[0]?.msg === '第 7 楼变了,对应记录已作废,将重新记录', status.notices[0]?.msg);
     // 编辑保留区(没有 id)的楼:零核对
     const c1 = stateMod.stats.capsuleChecks;
     chat[chat.length - 1].mes += '(改)';
     await eventSource.emit(eventTypes.MESSAGE_EDITED, chat.length - 1);
-    eq('T3.7 编辑未被覆盖的楼不核对任何胶囊', stateMod.stats.capsuleChecks - c1, 0);
+    eq('T3.7 编辑未被覆盖的楼不核对任何札记', stateMod.stats.capsuleChecks - c1, 0);
     // 文本没变的 EDITED:核对 1 个,不作废
     const before = data().capsules.length;
     await eventSource.emit(eventTypes.MESSAGE_EDITED, 10);
@@ -385,7 +385,7 @@ T('T3 编辑/swipe:只作废覆盖该楼的胶囊', async () => {
     // swipe
     chat[0].mes = '换了一个全新的回复';
     await eventSource.emit(eventTypes.MESSAGE_SWIPED, 0);
-    check('T3.9 swipe 同样作废覆盖它的胶囊', data().capsules.length === before - 1 && !chat[0].is_system, `caps=${data().capsules.length}`);
+    check('T3.9 swipe 同样作废覆盖它的札记', data().capsules.length === before - 1 && !chat[0].is_system, `caps=${data().capsules.length}`);
     // 重新记录
     S({ autoRecord: true });
     api.recorder.kick(ctxNow(), 0); await api.whenIdle();
@@ -393,54 +393,54 @@ T('T3 编辑/swipe:只作废覆盖该楼的胶囊', async () => {
     eq('T3.10 打开自动记录后补回被作废的两处', d2.capsules.length, 10);
     check('T3.11 重新记录后楼层再次隐藏', chat[0].is_system && chat[6].is_system && chat[7].is_system);
     const cap6 = d2.capsules.find(c => c.fromId === chat[6].extra.mnemo_id);
-    check('T3.12 新胶囊用的是原楼 id(身份稳定)且含新文本', !!cap6 && cap6.text.includes('改'), cap6?.text);
+    check('T3.12 新札记用的是原楼 id(身份稳定)且含新文本', !!cap6 && cap6.text.includes('改'), cap6?.text);
 });
 
-T('T4 删楼:只核对删除点之后的胶囊', async () => {
+T('T4 删楼:只核对删除点之后的札记', async () => {
     await setupCaps(12);
     S({ autoRecord: false });
     const before = data().capsules.slice();
     const checks0 = stateMod.stats.capsuleChecks;
-    chat.splice(13, 1); // 第 7 个胶囊(楼 12–13)的终点
+    chat.splice(13, 1); // 第 7 则札记(楼 12–13)的终点
     await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
     const d = data();
     eq('T4.1 失效 1 个(终点楼被删),剩 9 个', d.capsules.length, 9);
-    eq('T4.2 只核对了删除点之后的 3 个胶囊(不是全部 10 个)', stateMod.stats.capsuleChecks - checks0, 3);
-    check('T4.3 删除点之前的 6 个胶囊对象原样保留', before.slice(0, 6).every((c, i) => d.capsules[i] === c));
-    check('T4.4 删除点之后的 3 个胶囊仍然有效(下标已平移)', before.slice(7).every(c => d.capsules.includes(c)) && d.capsules.slice(6).every(c => { const r = idxOfCap(c); return r.fi >= 0 && stateMod.rangeHash(ctxNow(), r.fi, r.ti) === c.rangeHash; }));
-    check('T4.5 失效胶囊剩下的那一层取消隐藏', !chat[12].is_system);
+    eq('T4.2 只核对了删除点之后的 3 则札记(不是全部 10 个)', stateMod.stats.capsuleChecks - checks0, 3);
+    check('T4.3 删除点之前的 6 则札记对象原样保留', before.slice(0, 6).every((c, i) => d.capsules[i] === c));
+    check('T4.4 删除点之后的 3 则札记仍然有效(下标已平移)', before.slice(7).every(c => d.capsules.includes(c)) && d.capsules.slice(6).every(c => { const r = idxOfCap(c); return r.fi >= 0 && stateMod.rangeHash(ctxNow(), r.fi, r.ti) === c.rangeHash; }));
+    check('T4.5 失效札记剩下的那一层取消隐藏', !chat[12].is_system);
     check('T4.6 hiddenIds 不含已删的楼', d.hiddenIds.length === 18 && d.hiddenIds.every(id => chat.some(m => m.extra?.mnemo_id === id)), `len=${d.hiddenIds.length}`);
-    // 删除胶囊中间的一层(端点还在):指纹变了 → 作废
+    // 删除札记中间的一层(端点还在):指纹变了 → 作废
     await setupCaps(12, {}); S({ autoRecord: false });
-    // 重做:合并成两轮一个胶囊
+    // 重做:合并成两轮一则札记
     await resetWorld({ reserve: 3 }); fx.mergePairs = true; await loadHistory(12); await backfillAll(); S({ autoRecord: false });
-    eq('T4.7 前置:合并后 5 个胶囊,每个 4 层', data().capsules.length, 5);
+    eq('T4.7 前置:合并后 5 则札记,每个 4 层', data().capsules.length, 5);
     const ch = stateMod.stats.capsuleChecks;
-    chat.splice(5, 1); // 第 2 个胶囊(楼 4–7)的中间
+    chat.splice(5, 1); // 第 2 则札记(楼 4–7)的中间
     await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
-    check('T4.8 中间删一层:该胶囊指纹变化 → 作废,其余保留', data().capsules.length === 4 && stateMod.stats.capsuleChecks - ch === 4, `caps=${data().capsules.length} checks=${stateMod.stats.capsuleChecks - ch}`);
+    check('T4.8 中间删一层:该札记指纹变化 → 作废,其余保留', data().capsules.length === 4 && stateMod.stats.capsuleChecks - ch === 4, `caps=${data().capsules.length} checks=${stateMod.stats.capsuleChecks - ch}`);
     // 删最后一层(重新生成回复的常见操作)
     await resetWorld({ reserve: 3 }); await loadHistory(8); await backfillAll();
     const n0 = data().capsules.length;
     chat.pop(); await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
-    eq('T4.9 删保留区里的最后一层不影响已有胶囊', data().capsules.length, n0);
+    eq('T4.9 删保留区里的最后一层不影响已有札记', data().capsules.length, n0);
 });
 
 T('T4b 删楼后保留区回退:放出保留区、继续聊再藏回去', async () => {
     const shown = (from) => chat.slice(from).every(m => !m.is_system);
     const hiddenUpTo = (to) => chat.slice(0, to).every(m => m.is_system);
-    // 删在胶囊边界上:没有胶囊作废(用户撞到的情况)
+    // 删在札记边界上:没有札记作废(用户撞到的情况)
     await setupCaps(12); S({ autoRecord: false });
-    eq('T4b.0 前置:10 个胶囊覆盖楼 0–19,全部隐藏', data().hiddenIds.length, 20);
+    eq('T4b.0 前置:10 则札记覆盖楼 0–19,全部隐藏', data().hiddenIds.length, 20);
     chat.splice(20); await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
-    eq('T4b.1 胶囊一个没坏', data().capsules.length, 10);
+    eq('T4b.1 札记一个没坏', data().capsules.length, 10);
     check('T4b.2 最后 3 楼(17–19)放出来了', shown(17), chat.map(m => +m.is_system).join(''));
     check('T4b.3 更早的楼仍隐藏', hiddenUpTo(17));
     eq('T4b.4 登记同步减少', data().hiddenIds.length, 17);
-    // 删到胶囊中间:后面的胶囊作废
+    // 删到札记中间:后面的札记作废
     await setupCaps(12); S({ autoRecord: false });
     chat.splice(14); await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
-    eq('T4b.5 剩 7 个胶囊(楼 0–13)', data().capsules.length, 7);
+    eq('T4b.5 剩 7 则札记(楼 0–13)', data().capsules.length, 7);
     check('T4b.6 最后 3 楼(11–13)放出来了,之前的仍隐藏', shown(11) && hiddenUpTo(11), chat.map(m => +m.is_system).join(''));
     // 继续聊:放出来的楼移出保留区后重新藏回去
     await speak(50);
@@ -453,12 +453,12 @@ T('T4b 删楼后保留区回退:放出保留区、继续聊再藏回去', async 
 T('T4c 清除本聊天数据:放出隐藏、清空记忆、保留摘要来源', async () => {
     await setupCaps(12); S({ autoRecord: false });
     recorder.setSource(ctxNow(), { mode: 'extract', rule: { type: 'tag', tag: 'summary' } });
-    check('T4c.0 前置:有胶囊且有隐藏', data().capsules.length > 0 && data().hiddenIds.length > 0);
+    check('T4c.0 前置:有札记且有隐藏', data().capsules.length > 0 && data().hiddenIds.length > 0);
     const r = recorder.clearChatData(ctxNow());
     check('T4c.1 返回 ok 并报告放出的楼数', r.ok && r.unhidden === 20, JSON.stringify(r));
     check('T4c.2 所有楼都不再隐藏', chat.every(m => !m.is_system));
     const d = ctxNow().chatMetadata.mnemosyne;
-    check('T4c.3 胶囊/记忆/版本/隐藏登记都清空', d && !d.capsules.length && !d.memory && !d.versions.length && !d.hiddenIds.length && !d.backfill, JSON.stringify(d));
+    check('T4c.3 札记/记忆/版本/隐藏登记都清空', d && !d.capsules.length && !d.memory && !d.versions.length && !d.hiddenIds.length && !d.backfill, JSON.stringify(d));
     eq('T4c.4 摘要来源保留', d.source?.mode, 'extract');
     await resetWorld({ reserve: 3 });
     const r2 = recorder.clearChatData(ctxNow());
@@ -479,15 +479,15 @@ T('T5 折叠:阈值/四节/润色回落/撤销', async () => {
     const secs = fold.parseSections(M1.text);
     check('T5.4 长期记忆五节齐全', ['前情', '人物与关系', '当前状态', '时间线', '未结事项'].every(t => secs[t].length > 0 && M1.text.includes(`## ${t}`)), M1.text);
     check('T5.5 前情经过润色(两步都发了)', fx.calls.merge === 1 && fx.calls.polish === 1 && secs['前情'].startsWith('润色:草稿:'), secs['前情']);
-    check('T5.6 已折叠胶囊在版本链里保留正文、楼仍隐藏、范围有效', data().capsules.filter(c => c.folded).every(c => c.text.length > 0 && idxOfCap(c).fi >= 0) && chat[0].is_system);
+    check('T5.6 已折叠札记在版本链里保留正文、楼仍隐藏、范围有效', data().capsules.filter(c => c.folded).every(c => c.text.length > 0 && idxOfCap(c).fi >= 0) && chat[0].is_system);
     eq('T5.7 首次折叠的版本记录里「折叠前」是空记忆', data().versions[0]?.before, null);
-    check('T5.8 注入含长期记忆、不含已折叠胶囊正文', ext.last.value.includes('## 前情') && !ext.last.value.includes(origFirst), ext.last.value.slice(0, 80));
-    // 第二次折叠(版本保留数 1:第一版被挤出链尾;M4 起胶囊正文一直保留,不再清空、不再并成占位)
+    check('T5.8 注入含长期记忆、不含已折叠札记正文', ext.last.value.includes('## 前情') && !ext.last.value.includes(origFirst), ext.last.value.slice(0, 80));
+    // 第二次折叠(版本保留数 1:第一版被挤出链尾;M4 起札记正文一直保留,不再清空、不再并成占位)
     S({ memoryVersions: 1 });
     const r2 = await recorder.foldNowExclusive(ctxNow());
     const d = data();
     check('T5.9 第二次折叠:最新一版的折叠前 = 第一版全文', d.versions.length === 1 && d.versions[0].before.text === M1.text && d.memory.text !== M1.text);
-    check('T5.10 被挤出链尾的已折叠胶囊保留正文、不并成占位(供关键词召回)', d.capsules.length === 14 && d.capsules.filter(c => c.folded).every(c => c.text.length > 0 && c.tokens > 0), `capsules=${d.capsules.length}`);
+    check('T5.10 被挤出链尾的已折叠札记保留正文、不并成占位(供关键词召回)', d.capsules.length === 14 && d.capsules.filter(c => c.folded).every(c => c.text.length > 0 && c.tokens > 0), `capsules=${d.capsules.length}`);
     const cap = d.capsules.filter(c => c.folded);
     check('T5.11 合并后的占位范围连续且指纹有效', cap.every(c => { const r = idxOfCap(c); return r.fi >= 0 && stateMod.rangeHash(ctxNow(), r.fi, r.ti) === c.rangeHash; }));
     // 撤销
@@ -495,7 +495,7 @@ T('T5 折叠:阈值/四节/润色回落/撤销', async () => {
     const ok = fold.undoFold(ctxNow());
     const d2 = data();
     check('T5.12 撤销:长期记忆回到上一版', ok && d2.memory.text === M1.text && d2.versions.length === 0);
-    check('T5.13 撤销:被折叠的胶囊恢复原文且不再折叠', undoneIds.every(id => { const c = d2.capsules.find(x => x.id === id); return c && !c.folded && c.text.length > 0; }));
+    check('T5.13 撤销:被折叠的札记恢复原文且不再折叠', undoneIds.every(id => { const c = d2.capsules.find(x => x.id === id); return c && !c.folded && c.text.length > 0; }));
     eq('T5.14 再撤销一次无效', fold.undoFold(ctxNow()), false);
     // 润色失败回落草稿
     await resetWorld({ reserve: 3, foldThreshold: 1e6 });
@@ -509,7 +509,7 @@ T('T5 折叠:阈值/四节/润色回落/撤销', async () => {
     await resetWorld({ reserve: 3, batchMaxRounds: 6, foldThreshold: 120, memoryVersions: 2 });
     await loadHistory(30); await backfillAll();
     check('T5.16 补建过程中攒够阈值就顺手折叠', fx.calls.merge >= 2 && !!data().memory, `merge=${fx.calls.merge}`);
-    check('T5.17 折叠后所有胶囊都保留正文(M4:不再清空)', data().capsules.length === 28 && data().capsules.every(c => c.text.length > 0), `caps=${data().capsules.length}`);
+    check('T5.17 折叠后所有札记都保留正文(M4:不再清空)', data().capsules.length === 28 && data().capsules.every(c => c.text.length > 0), `caps=${data().capsules.length}`);
     check('T5.18 折叠后未折叠 token 回落到阈值以内', fold.unfoldedTokens(data()) <= 120, `un=${fold.unfoldedTokens(data())}`);
     // 折叠合并失败:不改动任何东西
     await resetWorld({ reserve: 3, foldThreshold: 1e6 }); await loadHistory(8); await backfillAll();
@@ -527,7 +527,7 @@ T('T6 恢复全部隐藏', async () => {
     await eventSource.emit(eventTypes.CHAT_CHANGED, 'c');
     await backfillAll();
     const d = data();
-    check('T6.1 前置:有胶囊、有隐藏', d.capsules.length >= 5 && d.hiddenIds.length > 0, `caps=${d.capsules.length}`);
+    check('T6.1 前置:有札记、有隐藏', d.capsules.length >= 5 && d.hiddenIds.length > 0, `caps=${d.capsules.length}`);
     check('T6.2 原生系统消息/用户隐藏的楼没被登记', !d.hiddenIds.includes(chat[0].extra?.mnemo_id) && !chat[0].extra?.mnemo_id && !chat[3].extra?.mnemo_id);
     const n = hide.restoreAll(ctxNow());
     check('T6.3 恢复了本插件隐藏的全部楼', n === 10 + 0 || n > 0, `n=${n}`);
@@ -535,9 +535,9 @@ T('T6 恢复全部隐藏', async () => {
     check('T6.5 用户自己隐藏的楼仍是 is_system', chat[3].is_system === true);
     check('T6.6 除上述两条外没有任何楼仍被隐藏', chat.every((m, i) => i === 0 || i === 3 ? m.is_system : !m.is_system));
     eq('T6.7 hiddenIds 清空', data().hiddenIds.length, 0);
-    // 换聊天回来:胶囊仍有效(恢复隐藏不改变正文楼集合),整理会重新隐藏
+    // 换聊天回来:札记仍有效(恢复隐藏不改变正文楼集合),整理会重新隐藏
     await eventSource.emit(eventTypes.CHAT_CHANGED, 'again');
-    check('T6.8 重载聊天后胶囊全部有效并重新隐藏', data().capsules.length >= 5 && chat[1].is_system && chat[0].is_system && chat[3].is_system, `caps=${data().capsules.length}`);
+    check('T6.8 重载聊天后札记全部有效并重新隐藏', data().capsules.length >= 5 && chat[1].is_system && chat[0].is_system && chat[3].is_system, `caps=${data().capsules.length}`);
 });
 
 T('T7 总开关与注入', async () => {
@@ -550,10 +550,10 @@ T('T7 总开关与注入', async () => {
     eq('T7.3 关闭时事件不触发记录', fx.calls.batch, b0);
     S({ enabled: true }); inject.refreshInject(ctxNow());
     check('T7.4 重新开启恢复注入', ext.last.value.includes('<mnemosyne_memory>'));
-    // 预算:超了丢最旧的胶囊,长期记忆不裁
+    // 预算:超了丢最旧的札记,长期记忆不裁
     S({ injectBudgetRatio: 0.01 });
     const v = inject.refreshInject(ctxNow());
-    check('T7.5 预算紧张时先丢最旧胶囊(保留最新)', v === '' || (!v.includes('记录1:') ), v.slice(0, 120));
+    check('T7.5 预算紧张时先丢最旧札记(保留最新)', v === '' || (!v.includes('记录1:') ), v.slice(0, 120));
     S({ injectBudgetRatio: 0.25, injectPosition: 0, injectDepth: 7, injectRole: 2 });
     inject.refreshInject(ctxNow());
     check('T7.6 位置/深度/角色可调', ext.last.position === 0 && ext.last.depth === 7 && ext.last.role === 2, JSON.stringify(ext.last));
@@ -570,7 +570,7 @@ T('T8 结构性约束', async () => {
     check('T8.5 悬浮球已挂载', !!document.getElementById('mnemosyne-fab'));
     const d = data();
     check('T8.6 存储结构符合约定', d.v === 2 && Array.isArray(d.capsules) && 'memory' in d && Array.isArray(d.versions) && !('memoryPrev' in d) && Array.isArray(d.hiddenIds) && 'backfill' in d, Object.keys(d).join());
-    check('T8.7 胶囊不存修订历史(只有约定字段)', Object.keys(d.capsules[0]).sort().join() === 'folded,fromId,id,points,rangeHash,text,title,toId,tokens,ts', Object.keys(d.capsules[0]).join());
+    check('T8.7 札记不存修订历史(只有约定字段)', Object.keys(d.capsules[0]).sort().join() === 'folded,fromId,id,points,rangeHash,text,title,toId,tokens,ts', Object.keys(d.capsules[0]).join());
     // 打开面板后能渲染四页且无异常
     api.panel.open('home'); let ok = true;
     for (const p of ['home', 'capsules', 'memory', 'settings']) { try { api.panel.goto(p); } catch (e) { ok = false; log('页面渲染异常', p, e); } }
@@ -608,17 +608,17 @@ T('T9 旧数据迁移:不丢任何东西', async () => {
     await api.whenIdle();
     const d = data();
     eq('T9.1 版本号升到 2', d.v, 2);
-    eq('T9.2 胶囊一个没少、id 与顺序不变', d.capsules.map(c => c.id).join(), caps.map(c => c.id).join());
-    check('T9.3 旧胶囊补空 points;折叠标记/范围/指纹原样', d.capsules.every((c, i) => Array.isArray(c.points) && c.points.length === 0 && c.folded === (i < 3)
+    eq('T9.2 札记一个没少、id 与顺序不变', d.capsules.map(c => c.id).join(), caps.map(c => c.id).join());
+    check('T9.3 旧札记补空 points;折叠标记/范围/指纹原样', d.capsules.every((c, i) => Array.isArray(c.points) && c.points.length === 0 && c.folded === (i < 3)
         && c.fromId === caps[i].fromId && c.toId === caps[i].toId && c.rangeHash === caps[i].rangeHash && c.title === (i === 2 ? '旧记录2' : caps[i].title)));
-    check('T9.4 已并成占位的旧胶囊照原样(空正文)', d.capsules[0].text === '' && d.capsules[1].text === '');
-    eq('T9.5 未折叠胶囊正文还在', d.capsules[5].text, '旧正文5');
+    check('T9.4 已并成占位的旧札记照原样(空正文)', d.capsules[0].text === '' && d.capsules[1].text === '');
+    eq('T9.5 未折叠札记正文还在', d.capsules[5].text, '旧正文5');
     eq('T9.6 隐藏登记原样', d.hiddenIds.join(), v1.hiddenIds.join());
     check('T9.7 楼层仍是隐藏状态', chat.slice(0, 16).every(m => m.is_system));
     const sec = d.memory.sections;
     check('T9.8 长期记忆按分节拆开,缺的「当前状态」留空', sec.prelude === '旧前情内容' && sec.people === '旧人物内容' && sec.now === '' && sec.timeline === '旧时间线内容' && sec.open === '旧未结内容', JSON.stringify(sec));
     check('T9.9 text 仍含全部旧内容', ['旧前情内容', '旧人物内容', '旧时间线内容', '旧未结内容'].every(t => d.memory.text.includes(t)));
-    check('T9.10 memoryPrev 变成版本链一条;被吞的胶囊正文放回', d.versions.length === 1 && !('memoryPrev' in d) && d.versions[0].before.sections.prelude === '更早的前情'
+    check('T9.10 memoryPrev 变成版本链一条;被吞的札记正文放回', d.versions.length === 1 && !('memoryPrev' in d) && d.versions[0].before.sections.prelude === '更早的前情'
         && d.versions[0].foldedIds.join() === 'c2' && d.capsules[2].text === '旧正文2' && d.capsules[2].tokens === 30);
     check('T9.11 注入含旧长期记忆', ext.last.value.includes('旧前情内容'));
     // 再加载一次:幂等,数据不变
@@ -655,7 +655,7 @@ T('T9 旧数据迁移:不丢任何东西', async () => {
     } finally { console.error = origErr; }
 });
 
-T('T10 胶囊解析 points:容错', async () => {
+T('T10 札记解析 points:容错', async () => {
     const n = recorder.normalizeCapsules;
     const good = n({ capsules: [{ rounds: [1], title: 'a', text: 'x', points: [
         { k: '物品', t: '钥匙', key: '钥匙' }, { k: '乱类', t: '丢掉' }, { k: '台词', t: '  逐字\n台词 ' },
@@ -666,7 +666,7 @@ T('T10 胶囊解析 points:容错', async () => {
     check('T10.3 t 截到 120,key 截到 40', good.points[2].t.length === 120 && good.points[2].key.length === 40);
     check('T10.4 缺 key 给空串', good.points[1].key === '');
     const bad = [undefined, 'abc', {}, 42, [1, 2]].map(pts => n({ capsules: [{ rounds: [1], title: 't', text: 'x', points: pts }] }, 1, 5));
-    check('T10.5 points 缺失/格式不对:胶囊仍在,points 为空数组', bad.every(r => r.length === 1 && Array.isArray(r[0].points) && r[0].points.length === 0));
+    check('T10.5 points 缺失/格式不对:札记仍在,points 为空数组', bad.every(r => r.length === 1 && Array.isArray(r[0].points) && r[0].points.length === 0));
     const many = n({ capsules: [{ rounds: [1], title: 't', text: 'x', points: Array.from({ length: 9 }, (_, i) => ({ k: '物品', t: '物' + i, key: '' })) }] }, 1, 2);
     eq('T10.6 超过上限的截断', many[0].points.length, 2);
 
@@ -674,13 +674,13 @@ T('T10 胶囊解析 points:容错', async () => {
     await resetWorld({ reserve: 3 });
     await loadHistory(6); await backfillAll();
     let d = data();
-    check('T10.7 胶囊带 points:id=胶囊id:序号,at=胶囊终点,类别合法', d.capsules.length === 4 && d.capsules.every(c => c.points.length === 2
+    check('T10.7 札记带 points:id=札记id:序号,at=札记终点,类别合法', d.capsules.length === 4 && d.capsules.every(c => c.points.length === 2
         && c.points.every((p, i) => p.id === `${c.id}:${i}` && p.at === c.toId && ['台词', '物品', '数字', '称呼', '约定', '伏笔'].includes(p.k))), JSON.stringify(d.capsules[0]?.points));
     await resetWorld({ reserve: 3 });
     fx.pointsFn = () => 'not-an-array';
     await loadHistory(6); await backfillAll();
     d = data();
-    check('T10.8 模型给了坏 points:整批胶囊照常生成,points 为空', d.capsules.length === 4 && d.capsules.every(c => Array.isArray(c.points) && c.points.length === 0));
+    check('T10.8 模型给了坏 points:整批札记照常生成,points 为空', d.capsules.length === 4 && d.capsules.every(c => Array.isArray(c.points) && c.points.length === 0));
     await resetWorld({ reserve: 3, maxPoints: 1 });
     await loadHistory(6); await backfillAll();
     check('T10.9 maxPoints 写进提示词并截断结果', fx.lastSystem.includes('最多 1 条') && data().capsules.every(c => c.points.length === 1), fx.lastSystem.slice(-200));
@@ -714,7 +714,7 @@ T('T12 折叠:锚点 = points 去掉 resolved;润色核对', async () => {
     await resetWorld({ reserve: 3 });
     fx.pointsFn = () => { const q = ++fx.seq; return [{ k: '数字', t: `数字${q}`, key: `${q}号` }, { k: '物品', t: `物品${q}`, key: `钥${q}匙` }, { k: '伏笔', t: `伏笔${q}`, key: '' }]; };
     await loadHistory(12); await backfillAll();
-    check('T12.0 前置:10 个胶囊,每个 3 点', data().capsules.length === 10 && data().capsules.every(c => c.points.length === 3));
+    check('T12.0 前置:10 则札记,每个 3 点', data().capsules.length === 10 && data().capsules.every(c => c.points.length === 3));
     let resolvedId = null;
     fx.resolveFn = (prompt) => {
         const ids = [...prompt.split('【这批记录的新锚点】')[1].matchAll(/^\[([^\]]+)\] /gm)].map(m => m[1]);
@@ -764,14 +764,14 @@ T('T12 折叠:锚点 = points 去掉 resolved;润色核对', async () => {
 T('T13 版本链:连续折叠/连续撤销/挤出链尾', async () => {
     await resetWorld({ reserve: 3, memoryVersions: 5 });
     await loadHistory(18); await backfillAll();
-    eq('T13.0 前置:16 个胶囊', data().capsules.length, 16);
+    eq('T13.0 前置:16 则札记', data().capsules.length, 16);
     const snap = () => ({ text: data().memory?.text ?? null, folded: data().capsules.filter(c => c.folded).map(c => c.id).join(), n: data().capsules.length });
     const snaps = [snap()];
     for (let i = 0; i < 3; i++) { await recorder.foldNowExclusive(ctxNow()); snaps.push(snap()); }
     eq('T13.1 三次折叠后链长 3', data().versions.length, 3);
-    check('T13.2 每版吞掉的胶囊互不相交且递增(8/4/2)', data().versions.map(v => v.foldedIds.length).join() === '8,4,2'
+    check('T13.2 每版吞掉的札记互不相交且递增(8/4/2)', data().versions.map(v => v.foldedIds.length).join() === '8,4,2'
         && new Set(data().versions.flatMap(v => v.foldedIds)).size === 14);
-    check('T13.3 链内的已折叠胶囊都保留正文', data().capsules.filter(c => c.folded).every(c => c.text.length > 0));
+    check('T13.3 链内的已折叠札记都保留正文', data().capsules.filter(c => c.folded).every(c => c.text.length > 0));
     check('T13.4 每版的折叠前快照 = 上一次折叠后的全文', data().versions[1].before.text === snaps[1].text && data().versions[2].before.text === snaps[2].text && data().versions[0].before === null);
     for (let k = 2; k >= 0; k--) {
         const ok = fold.undoFold(ctxNow());
@@ -779,51 +779,51 @@ T('T13 版本链:连续折叠/连续撤销/挤出链尾', async () => {
         check(`T13.${5 + (2 - k)} 第 ${3 - k} 次撤销:内容与折叠前逐项一致`, ok && now.text === snaps[k].text && now.folded === snaps[k].folded && now.n === snaps[k].n && data().versions.length === k,
             JSON.stringify({ ok, k, len: data().versions.length, same: now.text === snaps[k].text, folded: now.folded === snaps[k].folded }));
     }
-    check('T13.8 撤销光后再撤销无效、长期记忆为空、胶囊全部未折叠', fold.undoFold(ctxNow()) === false && data().memory === null && data().capsules.every(c => !c.folded && c.text.length > 0));
+    check('T13.8 撤销光后再撤销无效、长期记忆为空、札记全部未折叠', fold.undoFold(ctxNow()) === false && data().memory === null && data().capsules.every(c => !c.folded && c.text.length > 0));
 
-    // 超过上限:被挤出的那一版只是离开版本链,胶囊正文照旧保留(M4)
+    // 超过上限:被挤出的那一版只是离开版本链,札记正文照旧保留(M4)
     await resetWorld({ reserve: 3, memoryVersions: 2 });
     await loadHistory(18); await backfillAll();
     await recorder.foldNowExclusive(ctxNow());
     const ids1 = data().versions[0].foldedIds.slice();
     check('T13.9 第一版还在链里:正文保留', ids1.every(id => data().capsules.find(c => c.id === id).text.length > 0));
     await recorder.foldNowExclusive(ctxNow());
-    check('T13.10 链长 2 时第一版仍在,胶囊正文仍保留', data().versions.length === 2 && ids1.every(id => data().capsules.find(c => c.id === id)?.text.length > 0));
+    check('T13.10 链长 2 时第一版仍在,札记正文仍保留', data().versions.length === 2 && ids1.every(id => data().capsules.find(c => c.id === id)?.text.length > 0));
     await recorder.foldNowExclusive(ctxNow());
     const d = data();
     eq('T13.11 第三次折叠把最旧一版挤出,链长仍是 2', d.versions.length, 2);
-    check('T13.12 被挤出那版的胶囊:正文仍保留(不清空)', ids1.every(id => { const c = d.capsules.find(x => x.id === id); return c && c.text.length > 0 && c.tokens > 0; }));
+    check('T13.12 被挤出那版的札记:正文仍保留(不清空)', ids1.every(id => { const c = d.capsules.find(x => x.id === id); return c && c.text.length > 0 && c.tokens > 0; }));
     const inChain = memMod.protectedIds(d);
-    check('T13.13 链内的胶囊正文仍在', [...inChain].every(id => d.capsules.find(c => c.id === id)?.text.length > 0));
+    check('T13.13 链内的札记正文仍在', [...inChain].every(id => d.capsules.find(c => c.id === id)?.text.length > 0));
     const plain = d.capsules.filter(c => c.folded && !inChain.has(c.id));
-    check('T13.14 被挤出的胶囊不并成占位,points 全部保留(8 个胶囊×2 点)', plain.length === ids1.length && plain.reduce((a, c) => a + c.points.length, 0) === ids1.length * 2, `caps=${plain.length} points=${plain.reduce((a, c) => a + c.points.length, 0)}`);
+    check('T13.14 被挤出的札记不并成占位,points 全部保留(8 则札记×2 点)', plain.length === ids1.length && plain.reduce((a, c) => a + c.points.length, 0) === ids1.length * 2, `caps=${plain.length} points=${plain.reduce((a, c) => a + c.points.length, 0)}`);
     check('T13.15 占位里每个点的 id 互不相同', new Set(plain.flatMap(c => c.points.map(p => p.id))).size === ids1.length * 2);
 });
 
-T('T14 删楼删到链内已折叠胶囊:回退 + 重新整理', async () => {
+T('T14 删楼删到链内已折叠札记:回退 + 重新整理', async () => {
     await resetWorld({ reserve: 3, memoryVersions: 5 });
     await loadHistory(12); await backfillAll();
     S({ autoRecord: false });
-    eq('T14.0 前置:10 个胶囊', data().capsules.length, 10);
+    eq('T14.0 前置:10 则札记', data().capsules.length, 10);
     await recorder.foldNowExclusive(ctxNow());
     const m1Text = data().memory.text;
     await recorder.foldNowExclusive(ctxNow());
     await recorder.foldNowExclusive(ctxNow());
     check('T14.1 前置:链长 3,批 5/2/1', data().versions.map(v => v.foldedIds.length).join() === '5,2,1');
     const c5 = data().capsules[5];
-    const delIdx = idxOfCap(c5).ti; // 第二批里第一个胶囊的终点
+    const delIdx = idxOfCap(c5).ti; // 第二批里第一则札记的终点
     chat.splice(delIdx, 1);
     await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
     const d = data();
     eq('T14.2 长期记忆回到第一次折叠后的版本', d.memory.text, m1Text);
     eq('T14.3 链截到被删版本之前(剩 1)', d.versions.length, 1);
-    check('T14.4 被删胶囊移除,其后吞进去的恢复成未折叠,更早的仍折叠', d.capsules.length === 9 && !d.capsules.some(c => c.id === c5.id)
+    check('T14.4 被删札记移除,其后吞进去的恢复成未折叠,更早的仍折叠', d.capsules.length === 9 && !d.capsules.some(c => c.id === c5.id)
         && d.capsules.slice(0, 5).every(c => c.folded) && d.capsules.slice(5).every(c => !c.folded && c.text.length > 0));
-    eq('T14.5 锚点只剩前 5 个胶囊的点(5×2)', memMod.activeAnchors(d).length, 10);
+    eq('T14.5 锚点只剩前 5 则札记的点(5×2)', memMod.activeAnchors(d).length, 10);
     check('T14.6 通知:长期记忆已回退', status.notices.some(n => n.msg.includes('长期记忆已回退到较早版本')), JSON.stringify(status.notices.map(n => n.msg)));
     const covered = d.capsules.reduce((a, c) => { const r = idxOfCap(c); return a + (r.ti - r.fi + 1); }, 0);
     eq('T14.7 隐藏登记 = 仍被覆盖的楼数', d.hiddenIds.length, covered);
-    check('T14.8 被删胶囊剩下的那一楼已取消隐藏,其后胶囊的楼仍隐藏', !chat[delIdx - 1].is_system && chat[delIdx].is_system && chat[delIdx + 3].is_system, chat.map(m => +m.is_system).join(''));
+    check('T14.8 被删札记剩下的那一楼已取消隐藏,其后札记的楼仍隐藏', !chat[delIdx - 1].is_system && chat[delIdx].is_system && chat[delIdx + 3].is_system, chat.map(m => +m.is_system).join(''));
     check('T14.9 注入里没有已回退的那批锚点之外的东西(无 −−)', ext.last.value.includes('## 锚点') && ext.last.value.includes('## 近期记录'));
     // 阈值够了会自动重新折叠
     const merge0 = fx.calls.merge;
@@ -833,19 +833,19 @@ T('T14 删楼删到链内已折叠胶囊:回退 + 重新整理', async () => {
     check('T14.10 回退后自动重新折叠(不等新消息)', fx.calls.merge > merge0 && data().versions.length >= 2, `merge ${merge0}→${fx.calls.merge} versions=${data().versions.length}`);
 });
 
-T('T15 删楼删到占位胶囊:points 按 at 丢弃', async () => {
+T('T15 删楼删到占位札记:points 按 at 丢弃', async () => {
     await resetWorld({ reserve: 3, memoryVersions: 1 });
     await loadHistory(16); await backfillAll();
     S({ autoRecord: false });
     await recorder.foldNowExclusive(ctxNow());
-    // 模拟 v0.4.x 留下的旧数据:第一批折叠的胶囊已清空正文(M4 之后新折叠的不会这样)
+    // 模拟 v0.4.x 留下的旧数据:第一批折叠的札记已清空正文(M4 之后新折叠的不会这样)
     for (const c of data().capsules.filter(x => x.folded)) { c.text = ''; c.tokens = 0; }
     await recorder.foldNowExclusive(ctxNow());
     let d = data();
     const P = d.capsules[0];
-    check('T15.0 前置:前 7 个胶囊并成一个占位,14 个点', P.folded && P.text === '' && P.points.length === 14 && d.versions.length === 1 && !memMod.protectedIds(d).has(P.id), `points=${P.points.length} caps=${d.capsules.length}`);
+    check('T15.0 前置:前 7 则札记并成一个占位,14 个点', P.folded && P.text === '' && P.points.length === 14 && d.versions.length === 1 && !memMod.protectedIds(d).has(P.id), `points=${P.points.length} caps=${d.capsules.length}`);
     const atOf = (p) => stateMod.idIndex(ctxNow(), p.at);
-    // A:删占位中间某个子胶囊的终点楼(第 3 个子胶囊 = 楼 4–5 的终点 5)
+    // A:删占位中间某个子札记的终点楼(第 3 个子札记 = 楼 4–5 的终点 5)
     const deadAt = P.points[4].at;
     chat.splice(stateMod.idIndex(ctxNow(), deadAt), 1);
     await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
@@ -890,7 +890,7 @@ T('T16 注入:锚点筛选与预算顺序', async () => {
     for (let i = 0; i < 30; i++) c0.points.push(mk(10 + i, '数字', '数字填充' + i, ''));
     v = inject.refreshInject(ctxNow());
     check('T16.7 锚点总数 >30:无 key 的不注入', !v.includes('数字戊') && !v.includes('数字填充') && v.includes('伏笔甲') && v.includes('物品丙'));
-    // 预算顺序:先丢最旧的胶囊,再丢最旧的非伏笔锚点,分节不裁
+    // 预算顺序:先丢最旧的札记,再丢最旧的非伏笔锚点,分节不裁
     c0.points.length = 5;
     for (let i = 0; i < 40; i++) c0.points.push(mk(50 + i, '物品', '物品填充' + String(i).padStart(2, '0'), '丙丙'));
     memMod.rebuildText(d);
@@ -900,7 +900,7 @@ T('T16 注入:锚点筛选与预算顺序', async () => {
     const full = v.length;
     S({ injectBudgetRatio: 0.03 });
     v = inject.refreshInject(ctxNow());
-    check('T16.9 预算紧:先丢胶囊(近期记录没了)', !v.includes('## 近期记录'), v.slice(0, 80));
+    check('T16.9 预算紧:先丢札记(近期记录没了)', !v.includes('## 近期记录'), v.slice(0, 80));
     check('T16.10 再紧:丢最旧的非伏笔锚点,留下最新的', !v.includes('物品丙') && v.includes('物品填充39') && v.length < full, `len=${v.length}`);
     check('T16.11 伏笔与分节不裁', v.includes('[伏笔] 伏笔甲') && v.includes('前情正文'));
     S({ injectBudgetRatio: 0.01 });
@@ -956,7 +956,7 @@ T('T19 被模型拒绝:拆批、只跳过那一轮、空回复重试、连续拒
     eq('T19.1 补建照常完成', r1.outcome, 'finished');
     check('T19.2 只跳过 1 轮(楼 8–9)', sk.length === 1 && sk[0].fi === 8 && sk[0].ti === 9, JSON.stringify(sk.map(x => [x.fi, x.ti])));
     check('T19.3 被跳过的楼没有隐藏,前后的楼正常隐藏', !chat[8].is_system && !chat[9].is_system && chat[7].is_system && chat[10].is_system);
-    eq('T19.4 其余 9 轮都有胶囊', d.capsules.length, 9);
+    eq('T19.4 其余 9 轮都有札记', d.capsules.length, 9);
     check('T19.5 跳过原因记下了', /Bad Request/.test(sk[0].reason), sk[0].reason);
     eq('T19.6 再补建不会重复请求被跳过的那轮', rec.countPending(ctxNow()), 0);
     // ② 清除标记后重试(这次不再拦)→ 补上
@@ -1043,12 +1043,12 @@ function putMemory(sections) {
 T('T20 旧数据兼容:没有 source 按自己写工作,新字段都是可选', async () => {
     await setupCaps(8);
     const before = JSON.parse(JSON.stringify(data()));
-    check('T20.0 前置:LLM 胶囊默认不带 clues/shifts/now,数据里没有 source', before.capsules.every(c => !('clues' in c) && !('shifts' in c) && !('now' in c)) && !('source' in before));
+    check('T20.0 前置:LLM 札记默认不带 clues/shifts/now,数据里没有 source', before.capsules.every(c => !('clues' in c) && !('shifts' in c) && !('now' in c)) && !('source' in before));
     chatMetadata.mnemosyne = JSON.parse(JSON.stringify(before));
     stateMod.resetRuntime(ctxNow());
     await eventSource.emit(eventTypes.CHAT_CHANGED, 'v2');
     await api.whenIdle();
-    eq('T20.1 v2 数据加载后原样(胶囊/隐藏登记)', JSON.stringify(data().capsules.map(c => c.id)) + data().hiddenIds.length, JSON.stringify(before.capsules.map(c => c.id)) + before.hiddenIds.length);
+    eq('T20.1 v2 数据加载后原样(札记/隐藏登记)', JSON.stringify(data().capsules.map(c => c.id)) + data().hiddenIds.length, JSON.stringify(before.capsules.map(c => c.id)) + before.hiddenIds.length);
     eq('T20.2 没有 source → 模式 llm', extractMod.sourceOf(data()).mode, 'llm');
     const c0 = fx.calls.batch;
     await speak(80); await speak(81); await speak(82);
@@ -1065,7 +1065,7 @@ T('T20 旧数据兼容:没有 source 按自己写工作,新字段都是可选', 
     stateMod.resetRuntime(ctxNow());
     await eventSource.emit(eventTypes.CHAT_CHANGED, 'v1');
     await api.whenIdle();
-    check('T20.5 v1 数据加载:胶囊/长期记忆/隐藏都在,source 缺省为 llm', data().capsules[0].text === '旧正文' && data().memory.sections.prelude === '旧前情' && data().hiddenIds.length === 2 && extractMod.sourceOf(data()).mode === 'llm');
+    check('T20.5 v1 数据加载:札记/长期记忆/隐藏都在,source 缺省为 llm', data().capsules[0].text === '旧正文' && data().memory.sections.prelude === '旧前情' && data().hiddenIds.length === 2 && extractMod.sourceOf(data()).mode === 'llm');
     eq('T20.6 normalizeSource 容错', JSON.stringify([extractMod.normalizeSource({ mode: 'x', rule: { type: 'tag', tag: '<bad' } }), extractMod.normalizeSource(null).mode]), JSON.stringify([{ mode: 'llm', rule: { type: 'tag', tag: 'abstract' }, foreshadowTag: '' }, 'llm']));
 });
 
@@ -1075,14 +1075,14 @@ T('T21 提取模式:标签规则 / 取不到回退 LLM / 伏笔标签 / clues / 
     recorder.setSource(ctxNow(), { mode: 'extract', rule: { type: 'tag', tag: 'abstract' }, foreshadowTag: 'fs' });
     await backfillAll();
     const d = data();
-    eq('T21.1 6 轮 6 个胶囊;只有漏写的那轮调了 LLM', d.capsules.length + '/' + fx.calls.batch, '6/1');
+    eq('T21.1 6 轮 6 则札记;只有漏写的那轮调了 LLM', d.capsules.length + '/' + fx.calls.batch, '6/1');
     check('T21.2 取最后一个 <abstract>,<br> 换成换行', d.capsules[0].text === '事｜第1件事发生了\n补充1', JSON.stringify(d.capsules[0].text));
     eq('T21.3 标题去掉「事｜」前缀', d.capsules[0].title, '第1件事发生了');
     check('T21.4 漏写的一轮由 LLM 补记,位置不乱', d.capsules[2].text.startsWith('第1轮:') && d.capsules[2].clues === undefined && idxOfCap(d.capsules[2]).fi === 4 && idxOfCap(d.capsules[3]).fi === 6);
     check('T21.5 补记请求只含漏写的那轮', fx.lastBatch.includes('漏写了摘要') && !fx.lastBatch.includes('第2件事'));
     check('T21.6 clues 存了原样摘录(含台词)', d.capsules[0].clues.length >= 1 && d.capsules[0].clues.some(x => x.includes('「原话1」')) && d.capsules[0].clues.length <= 6, JSON.stringify(d.capsules[0].clues));
     check('T21.7 伏笔标签 → 伏笔类必留点(去重,key 空,补 id/at)', d.capsules[0].points.length === 2 && d.capsules[0].points.every((p, i) => p.k === '伏笔' && p.key === '' && p.id === `${d.capsules[0].id}:${i}` && p.at === d.capsules[0].toId) && d.capsules[0].points[0].t === '线索甲1');
-    check('T21.8 hash 与隐藏规则同 LLM 胶囊', chat[0].is_system && chat[11].is_system && !chat[12].is_system && d.capsules.every(c => c.rangeHash === stateMod.rangeHash(ctxNow(), idxOfCap(c).fi, idxOfCap(c).ti)));
+    check('T21.8 hash 与隐藏规则同 LLM 札记', chat[0].is_system && chat[11].is_system && !chat[12].is_system && d.capsules.every(c => c.rangeHash === stateMod.rangeHash(ctxNow(), idxOfCap(c).fi, idxOfCap(c).ti)));
     eq('T21.9 进度统计:提取 5 轮 / LLM 补 1 轮', status.extract.extracted + '/' + status.extract.llm, '5/1');
     check('T21.10 tokens 已计', d.capsules[0].tokens > 0);
     // 伏笔点数量受 maxPoints 限制
@@ -1127,18 +1127,18 @@ T('T21b 提取模式:details 规则 / 多 AI 楼拼接 / 自动记录的积压�
     check('T21b.5 随后 5 轮要 LLM > 上限 2:不调 LLM,记为积压', fx.calls.batch === 0 && status.backlog > 0, `batch=${fx.calls.batch} backlog=${status.backlog}`);
     S({ autoMaxRounds: 10 });
     recorder.kick(ctxNow(), 0); await api.whenIdle();
-    check('T21b.6 上限放开后:LLM 补 5 轮,其余提取,共 8 个胶囊', data().capsules.length === 8 && status.extract.llm === 5 && status.extract.extracted === 3 && fx.calls.batch >= 1, `${data().capsules.length} ${JSON.stringify(status.extract)}`);
+    check('T21b.6 上限放开后:LLM 补 5 轮,其余提取,共 8 则札记', data().capsules.length === 8 && status.extract.llm === 5 && status.extract.extracted === 3 && fx.calls.batch >= 1, `${data().capsules.length} ${JSON.stringify(status.extract)}`);
 });
 
-T('T21c 提取模式补建时按块提交并顺手折叠(提取的胶囊折叠时补点)', async () => {
+T('T21c 提取模式补建时按块提交并顺手折叠(提取的札记折叠时补点)', async () => {
     await resetWorld({ reserve: 3, foldThreshold: 200, batchMaxRounds: 4 }); S({ autoRecord: false });
     await loadTagged(40);
     recorder.setSource(ctxNow(), { mode: 'extract' });
     const r = await backfillAll();
     const d = data();
     check('T21c.1 补建完成,全部 38 轮都提取,没调记录 LLM', r.outcome === 'finished' && d.capsules.length === 38 && fx.calls.batch === 0 && status.extract.extracted === 38, `${r.outcome} ${d.capsules.length}`);
-    check('T21c.2 中途按阈值折叠过(胶囊折叠、版本链有内容)', fx.calls.merge > 0 && d.capsules.some(c => c.folded) && d.versions.length > 0, `merge=${fx.calls.merge}`);
-    eq('T21c.3 范围连续:最后一个胶囊覆盖到第 76 楼', idxOfCap(d.capsules[d.capsules.length - 1]).ti, 75);
+    check('T21c.2 中途按阈值折叠过(札记折叠、版本链有内容)', fx.calls.merge > 0 && d.capsules.some(c => c.folded) && d.versions.length > 0, `merge=${fx.calls.merge}`);
+    eq('T21c.3 范围连续:最后一则札记覆盖到第 76 楼', idxOfCap(d.capsules[d.capsules.length - 1]).ti, 75);
 });
 
 T('T22 检测:只扫最新 AI 楼,列出全部标签', async () => {
@@ -1164,16 +1164,16 @@ T('T23 折叠补必留点:台词必须原样出自线索', async () => {
     recorder.setSource(ctxNow(), { mode: 'extract' });
     await backfillAll();
     const caps = data().capsules;
-    check('T23.0 前置:提取胶囊没有必留点、有 clues', caps.length === 5 && caps.every(c => c.points.length === 0 && c.clues.length > 0));
+    check('T23.0 前置:提取札记没有必留点、有 clues', caps.length === 5 && caps.every(c => c.points.length === 0 && c.clues.length > 0));
     const good = caps[0].clues.find(x => x.includes('原话1'));
     fx.mergeExtra = () => ({ newPoints: [
         { cap: 1, k: '台词', t: good }, { cap: 1, k: '台词', t: '线索里根本没有的话' }, { cap: 2, k: '物品', t: '某件物品', key: '物件' },
         { cap: 9, k: '物品', t: '序号越界' }, { cap: 1, k: '乱类', t: '类别不认识' }, { cap: 3, k: '物品', t: '不在这一批里' },
     ] });
     await recorder.foldNowExclusive(ctxNow());
-    check('T23.1 合并请求带上了待补胶囊的线索', fx.lastMerge.includes('【需要补必留点的记录线索】') && fx.lastMerge.includes('【序号1】') && fx.lastMerge.includes(good) && fx.lastMerge.includes('newPoints') === false, fx.lastMerge.slice(0, 300));
+    check('T23.1 合并请求带上了待补札记的线索', fx.lastMerge.includes('【需要补必留点的记录线索】') && fx.lastMerge.includes('【序号1】') && fx.lastMerge.includes(good) && fx.lastMerge.includes('newPoints') === false, fx.lastMerge.slice(0, 300));
     const d = data();
-    check('T23.2 原样的台词写进胶囊(补 id/at)', d.capsules[0].points.length === 1 && d.capsules[0].points[0].t === good && d.capsules[0].points[0].id === `${d.capsules[0].id}:0` && d.capsules[0].points[0].at === d.capsules[0].toId, JSON.stringify(d.capsules[0].points));
+    check('T23.2 原样的台词写进札记(补 id/at)', d.capsules[0].points.length === 1 && d.capsules[0].points[0].t === good && d.capsules[0].points[0].id === `${d.capsules[0].id}:0` && d.capsules[0].points[0].at === d.capsules[0].toId, JSON.stringify(d.capsules[0].points));
     check('T23.3 不在线索里的台词、越界序号、坏类别、不在本批的都丢掉', d.capsules[1].points.length === 1 && d.capsules[1].points[0].k === '物品' && d.capsules[2].points.length === 0, JSON.stringify(d.capsules.map(c => c.points.length)));
     {
         const cap = { id: 'q', clues: ['他说「明天一定会来接你」然后走了'], points: [] };
@@ -1204,13 +1204,13 @@ T('T24 人物动线:shifts/now 入库、### 解析、楼号校验', async () => 
     fx.nowFn = (grp) => grp[0].n % 2 ? `地点:站台${grp[0].n}\n在场:人甲` : { 乱: 1 };
     await loadHistory(12); await backfillAll();
     const d = data();
-    check('T24.1 shifts 最多 4 条、格式不对当空,胶囊本身不受影响', d.capsules.length === 10 && d.capsules[0].shifts.length === 4 && d.capsules[1].shifts === undefined && d.capsules[0].shifts[0].who === '人0', JSON.stringify(d.capsules.slice(0, 2).map(c => c.shifts)));
+    check('T24.1 shifts 最多 4 条、格式不对当空,札记本身不受影响', d.capsules.length === 10 && d.capsules[0].shifts.length === 4 && d.capsules[1].shifts === undefined && d.capsules[0].shifts[0].who === '人0', JSON.stringify(d.capsules.slice(0, 2).map(c => c.shifts)));
     check('T24.2 now 存下;格式不对当空', d.capsules[0].now.startsWith('地点:站台') && d.capsules[1].now === undefined);
     fx.mergeExtra = () => ({ people: '### 人甲／人乙\n倾向:在A时倾向B,但C除外\n当前:想要某事\n来由:#2 起因 → 从冷淡变热络;#23 假事件 → x;#999 乱写 → y\n\n### 人丙(丁)\n倾向:对人甲戒备\n当前:无\n来由:#4 某事 → 变' });
     await recorder.foldNowExclusive(ctxNow());
     check('T24.3 合并请求带上 shifts', fx.lastMerge.includes('【这批记录的人物变化】') && fx.lastMerge.includes('人0:从甲到乙0') && fx.lastMerge.includes('【序号1】'), fx.lastMerge.slice(0, 400));
     const ppl = data().memory.sections.people;
-    check('T24.4 来由里越界/不在任何胶囊范围的楼号去掉,那条来由保留', ppl.includes('#2 起因') && !ppl.includes('#23') && !ppl.includes('#999') && ppl.includes('假事件 → x') && ppl.includes('乱写 → y') && ppl.includes('#4 某事'), ppl);
+    check('T24.4 来由里越界/不在任何札记范围的楼号去掉,那条来由保留', ppl.includes('#2 起因') && !ppl.includes('#23') && !ppl.includes('#999') && ppl.includes('假事件 → x') && ppl.includes('乱写 → y') && ppl.includes('#4 某事'), ppl);
     const blocks = peopleMod.parsePeople(ppl);
     check('T24.5 按 ### 解析,标题里的别名都算本人', blocks.length === 2 && blocks[0].names.join() === '人甲,人乙' && blocks[1].names.join() === '人丙,丁' && blocks[0].raw.includes('当前:想要某事'), JSON.stringify(blocks));
     const legacy = peopleMod.parsePeople('人甲：与人乙相识\n人乙:同行\n续行内容\n\n人丙：独来独往');
@@ -1261,21 +1261,21 @@ T('T24b 注入人物:只带在场和最近提到的,超过 8 个按最近提到�
     void p0;
 });
 
-T('T25 现场快照:较新的胶囊 now 覆盖长期记忆里的当前状态', async () => {
+T('T25 现场快照:较新的札记 now 覆盖长期记忆里的当前状态', async () => {
     await resetWorld({ reserve: 3 }); S({ autoRecord: false });
     fx.nowFn = (grp) => `地点:新地${grp[0].n}\n在场:人甲`;
     await loadHistory(6); await backfillAll();
-    check('T25.0 前置:4 个胶囊都带 now', data().capsules.length === 4 && data().capsules.every(c => c.now));
+    check('T25.0 前置:4 则札记都带 now', data().capsules.length === 4 && data().capsules.every(c => c.now));
     putMemory({ now: '地点:旧地' });
     let v = inject.refreshInject(ctxNow());
-    check('T25.1 未折叠的最新胶囊的 now 覆盖长期记忆', v.includes('## 当前状态\n地点:新地4') && !v.includes('旧地') && !v.includes('新地3'), v);
+    check('T25.1 未折叠的最新札记的 now 覆盖长期记忆', v.includes('## 当前状态\n地点:新地4') && !v.includes('旧地') && !v.includes('新地3'), v);
     data().capsules.forEach(c => { c.folded = true; });
     v = inject.refreshInject(ctxNow());
-    check('T25.2 胶囊都已折叠 → 用长期记忆里的', v.includes('地点:旧地') && !v.includes('新地'));
+    check('T25.2 札记都已折叠 → 用长期记忆里的', v.includes('地点:旧地') && !v.includes('新地'));
     data().capsules[3].folded = false;
     data().capsules[3].now = '';
     v = inject.refreshInject(ctxNow());
-    check('T25.3 较新的胶囊没有 now → 仍用长期记忆', v.includes('地点:旧地'));
+    check('T25.3 较新的札记没有 now → 仍用长期记忆', v.includes('地点:旧地'));
     data().memory = null; data().capsules.forEach(c => { c.folded = false; });
     v = inject.refreshInject(ctxNow());
     check('T25.4 没有长期记忆时,快照也能单独注入', v.includes('## 当前状态\n地点:新地3'), v);
@@ -1445,7 +1445,7 @@ T('T30 面板:摘要来源与注入卡片', async () => {
 T('T32 主线筛选提示词 + 锚点按类别分组折叠', async () => {
     const P = await import('../core/prompts.js');
     const cp = P.capsulePrompt(5);
-    check('T32.1 胶囊提示词:必留点按「主线」判断,单个事件内部的细节不收', cp.includes('判断标准是「主线」') && cp.includes('只在某一个独立事件内部起作用'));
+    check('T32.1 札记提示词:必留点按「主线」判断,单个事件内部的细节不收', cp.includes('判断标准是「主线」') && cp.includes('只在某一个独立事件内部起作用'));
     check('T32.2 台词只收主要人物之间的话', cp.includes('台词:主要人物之间'));
     check('T32.3 折叠提示词:随事件结束撤下', P.PROMPT_FOLD_MERGE.includes('随事件结束'));
     await seedDemo();
@@ -1511,7 +1511,7 @@ T('T31 物品档案:来历 d / 别名 / 现状 itemNow / 合并 / 注入', async
         return { A: d.capsules[0].id + ':0', B: d.capsules[1].id + ':0', Q: d.capsules[2].id + ':0', N: d.capsules[3].id + ':0' };
     };
     let ids = await setup();
-    check('T31.0 前置:来历 d 随胶囊入库', data().capsules[0].points[0].d === '祖父留下的旧怀表,盖里刻着名字' && !('d' in data().capsules[1].points[0]), JSON.stringify(data().capsules[0].points));
+    check('T31.0 前置:来历 d 随札记入库', data().capsules[0].points[0].d === '祖父留下的旧怀表,盖里刻着名字' && !('d' in data().capsules[1].points[0]), JSON.stringify(data().capsules[0].points));
     // 4. 合并:带 d 的旧条当主条
     fx.mergeExtra = () => ({ items: [{ id: ids.A, now: '被乙借走,在乙手里', at: 3, merge: [ids.B] }] });
     await recorder.foldNowExclusive(ctxNow());
@@ -1630,7 +1630,7 @@ const promptsMod = await import('../core/prompts.js');
 const sec33 = (txt, from, to) => txt.split(from)[1].split(to)[0];
 const longDraft = (n, tag = '') => tag + '甲'.repeat(n - tag.length);
 
-/** 1000 楼 + 200 个全部折叠的胶囊(带正文、keys、points);基准和 T33.13 共用。 */
+/** 1000 楼 + 200 个全部折叠的札记(带正文、keys、points);基准和 T33.13 共用。 */
 function seedBigChat({ recall = true } = {}) {
     const filler = '这是一段用来占位的叙述文字,长度与真实聊天里的一层楼相当,没有任何具体内容。'.repeat(30).slice(0, 1500);
     for (let k = 0; k < 500; k++) {
@@ -1646,7 +1646,7 @@ function seedBigChat({ recall = true } = {}) {
         const ti = i === 199 ? 995 : fi + len - 1;
         for (let k = fi; k <= ti; k++) stateMod.assignFloorId(ctx, k);
         const cap = { id: 'g' + i, fromId: chat[fi].extra.mnemo_id, toId: chat[ti].extra.mnemo_id, rangeHash: stateMod.rangeHash(ctx, fi, ti),
-            title: `记录${i}`, text: '一段胶囊正文'.repeat(8), tokens: 60, folded: true, ts: Date.now(),
+            title: `记录${i}`, text: '一段札记正文'.repeat(8), tokens: 60, folded: true, ts: Date.now(),
             points: ['物品', '数字', '伏笔'].map((k, j) => ({ id: `g${i}:${j}`, k, t: `第${i}条的${k}要点`, key: k === '伏笔' ? '' : `词${i}x${j}`, at: chat[ti].extra.mnemo_id })) };
         if (recall) cap.keys = [`地${String(i).padStart(3, '0')}`, `物${String(i).padStart(3, '0')}`, `旅${String(i % 40).padStart(2, '0')}`, '主角']; // 定宽,免得合成词互为子串
         dd.capsules.push(cap);
@@ -1679,7 +1679,7 @@ T('T33 M4 防失忆:前情分篇章', async () => {
     })());
     check('T33.0c 随事件结束规则补了出处说明', promptsMod.PROMPT_FOLD_MERGE.includes('每条锚点末尾括注了它出自哪几楼、哪条记录'));
     check('T33.0d 新增/改动的提示词不含具体题材词', ['案件', '凶器', '证物'].every(w => !promptsMod.PROMPT_FOLD_MERGE.includes(w) && !promptsMod.PROMPT_ANCHOR_TIDY.includes(w) && !promptsMod.PROMPT_CHAPTER_MERGE.includes(w)) && !promptsMod.capsulePrompt(5).split('9. keys')[1].includes('案件'));
-    check('T33.0e 胶囊提示词带 keys 字段说明', promptsMod.capsulePrompt(5).includes('9. keys:3～6 个原样词') && promptsMod.capsulePrompt(5).includes('"keys":['));
+    check('T33.0e 札记提示词带 keys 字段说明', promptsMod.capsulePrompt(5).includes('9. keys:3～6 个原样词') && promptsMod.capsulePrompt(5).includes('"keys":['));
 
     // 1. 第一次折叠
     await setup();
@@ -1718,9 +1718,9 @@ T('T33 M4 防失忆:前情分篇章', async () => {
     check('T33.3d 合并后的篇章范围 = 原第 1 篇起点 ~ 原第 2 篇终点', m.chapters[0].fromId === mv.before.chapters[0].fromId && m.chapters[0].toId === mv.before.chapters[1].toId);
     const foldedAfter = data().capsules.filter(c => c.folded).length;
     fold.undoFold(ctxNow());
-    check('T33.3e 第一次撤销:回到合并前(3 篇),胶囊仍是折叠状态', data().memory.chapters.length === 3 && data().capsules.filter(c => c.folded).length === foldedAfter && data().memory.sections.prelude === data().memory.chapters.map(c => c.text).join('\n\n'));
+    check('T33.3e 第一次撤销:回到合并前(3 篇),札记仍是折叠状态', data().memory.chapters.length === 3 && data().capsules.filter(c => c.folded).length === foldedAfter && data().memory.sections.prelude === data().memory.chapters.map(c => c.text).join('\n\n'));
     fold.undoFold(ctxNow());
-    check('T33.3f 第二次撤销:回到第三次折叠前(2 篇),那批胶囊恢复未折叠', data().memory.chapters.length === 2 && data().capsules.filter(c => c.folded).length < foldedAfter);
+    check('T33.3f 第二次撤销:回到第三次折叠前(2 篇),那批札记恢复未折叠', data().memory.chapters.length === 2 && data().capsules.filter(c => c.folded).length < foldedAfter);
 
     // 4. 合并稿丢锚点关键词或太短:原样保留、出提示、折叠本身成功
     for (const [label, fn] of [['丢关键词', (a, b) => `${a}\n${b}`.replace(/怀表/g, '那件东西')], ['太短', () => '太短']]) {
@@ -1754,7 +1754,7 @@ T('T33 M4 防失忆:前情分篇章', async () => {
     api.panel.open('memory'); api.panel.renderNow(); api.panel.close();
     inject.refreshInject(ctxNow());
     const editTxt = fold.editableMemoryText(old, ctxNow());
-    check('T33.5a 读取时在内存里推导成一篇(范围=已折叠胶囊首尾),不触发保存、不改数据', derived.length === 1 && derived[0].text === oldPrelude && derived[0].gen === 1
+    check('T33.5a 读取时在内存里推导成一篇(范围=已折叠札记首尾),不触发保存、不改数据', derived.length === 1 && derived[0].text === oldPrelude && derived[0].gen === 1
         && derived[0].fromId === data().capsules.find(c => c.folded).fromId && counters.saves === saves0 && JSON.stringify(data()) === snapJson && editTxt.includes('### #1–'), `saves=${counters.saves - saves0}`);
     await fold1();
     check('T33.5b 下一次折叠后落地:2 篇,第 1 篇就是旧前情', data().memory.chapters.length === 2 && data().memory.chapters[0].text === oldPrelude && data().memory.chapters[0].gen === 1);
@@ -1790,10 +1790,10 @@ T('T33 M4 防失忆:前情分篇章', async () => {
     const root2 = document.getElementById('mnemosyne-host').shadowRoot;
     const chaps = root2.querySelectorAll('.mn-mem-sec[data-sec="prelude"] .mn-chap');
     check('T33.7 面板前情分篇:每篇一块,篇首小字楼号', chaps.length === 2 && [...chaps].every(el => /^#\d+–\d+$/.test(el.querySelector('.mn-chap-no')?.textContent || '')), String(chaps.length));
-    check('T33.7b 设置页:有前情上限和召回条数,没有「折叠后保留胶囊正文」', (() => {
+    check('T33.7b 设置页:有前情上限和召回条数,没有「折叠后保留札记正文」', (() => {
         api.panel.goto('settings'); api.panel.renderNow();
         const t = root2.innerHTML;
-        return t.includes('data-set="preludeBudget"') && t.includes('data-set="recallMax"') && !t.includes('折叠后保留胶囊正文') && !('keepFoldedText' in S({}));
+        return t.includes('data-set="preludeBudget"') && t.includes('data-set="recallMax"') && !t.includes('折叠后保留札记正文') && !('keepFoldedText' in S({}));
     })());
     api.panel.close();
 });
@@ -1817,26 +1817,26 @@ T('T33b M4 防失忆:关键词召回', async () => {
     await setup(keysFn);
     const caps = data().capsules;
     check('T33.8a 前置:8 个已折叠、保留正文且带 keys(2 个未折叠)', caps.filter(c => c.folded).length === 8 && caps.filter(c => c.folded).every(c => c.text && Array.isArray(c.keys) && c.keys.length === 3) && caps.filter(c => !c.folded).length === 2);
-    check('T33.8b 折叠、挤出版本链后胶囊正文仍在(memoryVersions=5 → 再压 6 次)', (() => { for (let i = 0; i < 0; i++); return data().capsules.filter(c => c.folded).every(c => c.text.length > 0); })());
+    check('T33.8b 折叠、挤出版本链后札记正文仍在(memoryVersions=5 → 再压 6 次)', (() => { for (let i = 0; i < 0; i++); return data().capsules.filter(c => c.folded).every(c => c.text.length > 0); })());
 
-    // normalizeKeys / 旧胶囊兜底
+    // normalizeKeys / 旧札记兜底
     const nk = memMod.normalizeKeys([' 甲 ', '甲', '长'.repeat(30), '', null, 'b', 'c', 'd', 'e', 'f', 'g']);
     check('T33.9a normalizeKeys:去空/去重/每个最长 20/最多 6 个', nk.length === 6 && nk[0] === '甲' && nk[1].length === 20 && nk.join() === ['甲', '长'.repeat(20), 'b', 'c', 'd', 'e'].join(), JSON.stringify(nk));
     eq('T33.9b normalizeKeys 也收「、/」分隔的字符串', memMod.normalizeKeys('怀表/车站、旅店').join(), '怀表,车站,旅店');
     const parsed = recorder.normalizeCapsules({ capsules: [{ rounds: [1], title: 't', text: 'x', keys: ['怀表', '怀表', '车站'] }] }, 1, 5);
-    eq('T33.9c 胶囊解析带 keys', parsed[0].keys.join(), '怀表,车站');
+    eq('T33.9c 札记解析带 keys', parsed[0].keys.join(), '怀表,车站');
     {
         const dd = { capsules: [{ id: 'z1', folded: true, text: '旧正文', keys: undefined, points: [{ id: 'z1:0', k: '物品', t: '怀表', key: '怀表/手表/表' }] }, { id: 'z2', folded: true, text: '', points: [{ id: 'z2:0', k: '物品', t: '钥匙', key: '钥匙' }] }, { id: 'z3', folded: false, text: '未折叠', keys: ['未折叠词'], points: [] }] };
         const idx = recallMod.buildRecallIndex(dd);
-        check('T33.9d 旧胶囊没有 keys:用 points 的 key(拆别名,单字别名不收)兜底;没正文的占位和未折叠的不进索引', idx.entries.length === 1 && idx.entries[0].cap.id === 'z1' && idx.entries[0].words.join() === '怀表,手表' && !idx.words.includes('钥匙') && !idx.words.includes('未折叠词'), JSON.stringify(idx.words));
+        check('T33.9d 旧札记没有 keys:用 points 的 key(拆别名,单字别名不收)兜底;没正文的占位和未折叠的不进索引', idx.entries.length === 1 && idx.entries[0].cap.id === 'z1' && idx.entries[0].words.join() === '怀表,手表' && !idx.words.includes('钥匙') && !idx.words.includes('未折叠词'), JSON.stringify(idx.words));
     }
 
     // 太常见的词被排除;只提主要人物名不召回
     let r0 = recallMod.recallStats.builds;
     chat[chat.length - 1].mes = '主角走进了房间,主角没有说话。';
     let v = inject.refreshInject(ctxNow());
-    check('T33.10a 8 个已折叠胶囊里每个都有的「主角」被排除:最近楼层只提它时不召回', !v.includes('相关的旧记录') && inject.injectStats.last.recall.length === 0, v.slice(-200));
-    // 提到一个旧胶囊的两个关键词 → 召回
+    check('T33.10a 8 个已折叠札记里每个都有的「主角」被排除:最近楼层只提它时不召回', !v.includes('相关的旧记录') && inject.injectStats.last.recall.length === 0, v.slice(-200));
+    // 提到一个旧札记的两个关键词 → 召回
     chat[chat.length - 1].mes = '她想起了旅店3号的灯,还有那把钥匙3。';
     v = inject.refreshInject(ctxNow());
     const cap3 = caps.filter(c => c.folded)[2];
@@ -1854,10 +1854,10 @@ T('T33b M4 防失忆:关键词召回', async () => {
     check('T33.10e 首页注入明细:列出召回了哪条、因为哪些词', rootH.textContent.includes('召回的旧记录(1)') && rootH.textContent.includes('命中:旅店3号、钥匙3') && rootH.textContent.includes(cap3.title));
     api.panel.close();
 
-    // 单词命中:只被 1～3 个胶囊共享的词算 2 分 → 一个就够
+    // 单词命中:只被 1～3 则札记共享的词算 2 分 → 一个就够
     chat[chat.length - 1].mes = '提到旅店5号。';
     v = inject.refreshInject(ctxNow());
-    check('T33.10f 只被 1 个胶囊拥有的词命中一次就够(2 分)', inject.injectStats.last.recall.length === 1 && inject.injectStats.last.recall[0].hits.join() === '旅店5号');
+    check('T33.10f 只被 1 则札记拥有的词命中一次就够(2 分)', inject.injectStats.last.recall.length === 1 && inject.injectStats.last.recall[0].hits.join() === '旅店5号');
 
     // recallMax / 排序 / 同分取更早
     chat[chat.length - 1].mes = '旅店2号 旅店6号 钥匙6';
@@ -1869,10 +1869,10 @@ T('T33b M4 防失忆:关键词召回', async () => {
     S({ recallMax: 0 }); v = inject.refreshInject(ctxNow());
     check('T33.11c recallMax=0:不召回', !v.includes('相关的旧记录') && inject.injectStats.last.recall.length === 0);
     S({ recallMax: 3 });
-    // 未折叠的胶囊本来就在近期记录里:不参与
+    // 未折叠的札记本来就在近期记录里:不参与
     chat[chat.length - 1].mes = '旅店9号 钥匙9';
     v = inject.refreshInject(ctxNow());
-    check('T33.11d 未折叠胶囊不进召回', inject.injectStats.last.recall.length === 0);
+    check('T33.11d 未折叠札记不进召回', inject.injectStats.last.recall.length === 0);
 
     // 预算:最先丢召回
     chat[chat.length - 1].mes = '旅店3号 钥匙3';
@@ -1896,12 +1896,12 @@ T('T33b M4 防失忆:关键词召回', async () => {
         const mk = (i, keys) => ({ id: `s${i}`, folded: true, text: `正文${i}`, keys, points: [] });
         const dd = { capsules: Array.from({ length: 20 }, (_, i) => mk(i, [`独${i}`, i < 4 ? '共甲' : `x${i}`, i < 4 ? '共乙' : `y${i}`, i < 8 ? '常见' : `z${i}`])) };
         const sel = (text, max = 5) => recallMod.selectRecall(dd, max, () => text.split('\n')).map(r => r.cap.id);
-        check('T33.13c 共享 4 个胶囊的词算 1 分:只命中一个不够,两个才够', sel('共甲').length === 0 && sel('共甲 共乙').length === 4 && sel('共甲 共乙').join() === 's0,s1,s2,s3');
+        check('T33.13c 共享 4 则札记的词算 1 分:只命中一个不够,两个才够', sel('共甲').length === 0 && sel('共甲 共乙').length === 4 && sel('共甲 共乙').join() === 's0,s1,s2,s3');
         check('T33.13d 超过 25% 的词(8/20)被丢,命中它也不召回', sel('常见').length === 0 && !recallMod.buildRecallIndex(dd).words.includes('常见'));
-        eq('T33.13e 少于 8 个已折叠胶囊时不做常见词排除', recallMod.buildRecallIndex({ capsules: Array.from({ length: 5 }, (_, i) => mk(i, ['都有', `独${i}`])) }).words.includes('都有'), true);
+        eq('T33.13e 少于 8 个已折叠札记时不做常见词排除', recallMod.buildRecallIndex({ capsules: Array.from({ length: 5 }, (_, i) => mk(i, ['都有', `独${i}`])) }).words.includes('都有'), true);
     }
 
-    // 性能:1000 楼 + 200 个全部折叠的胶囊(带 keys)
+    // 性能:1000 楼 + 200 个全部折叠的札记(带 keys)
     await resetWorld({ reserve: 3, foldThreshold: 1e9 });
     seedBigChat({ recall: true });
     S({ injectBudgetRatio: 0.6 }); // 200 条伏笔常驻就有 2400 token,默认预算会先丢召回
@@ -1910,9 +1910,9 @@ T('T33b M4 防失忆:关键词召回', async () => {
     const times = [];
     for (let i = 0; i < 200; i++) { const t0 = performance.now(); inject.refreshInject(ctxNow()); times.push(performance.now() - t0); }
     const avg = times.reduce((a, b) => a + b, 0) / times.length;
-    check('T33.14a 性能:1000 楼 + 200 折叠胶囊,单次注入平均 < 2 ms(v0.4.1 同量级)', avg < 2, `avg=${avg.toFixed(3)}ms max=${Math.max(...times).toFixed(3)}`);
+    check('T33.14a 性能:1000 楼 + 200 折叠札记,单次注入平均 < 2 ms(v0.4.1 同量级)', avg < 2, `avg=${avg.toFixed(3)}ms max=${Math.max(...times).toFixed(3)}`);
     eq('T33.14b 200 次注入只建一次索引', recallMod.recallStats.builds - bb0, 1);
-    check('T33.14c 大聊天里确实召回了:地150/物150 的胶囊(「旅07」被 5 个胶囊共享、「主角」被丢)', inject.injectStats.last.recall.length >= 1 && inject.injectStats.last.recall[0].id === 'g150' && !inject.injectStats.last.recall.some(r => r.hits.includes('主角')), JSON.stringify(inject.injectStats.last) .slice(0, 400));
+    check('T33.14c 大聊天里确实召回了:地150/物150 的札记(「旅07」被 5 则札记共享、「主角」被丢)', inject.injectStats.last.recall.length >= 1 && inject.injectStats.last.recall[0].id === 'g150' && !inject.injectStats.last.recall.some(r => r.hits.includes('主角')), JSON.stringify(inject.injectStats.last) .slice(0, 400));
     fx.keysFn = null; fx.pointsFn = null;
 });
 
@@ -1944,7 +1944,7 @@ T('T33c M4 防失忆:锚点出处与整理锚点', async () => {
     await recorder.foldNowExclusive(ctxNow());
     const d0 = data();
     const before = memMod.activeAnchors(d0).length;
-    eq('T33.16a 前置:5 个已折叠胶囊 × 2 点 = 10 条锚点', before, 10);
+    eq('T33.16a 前置:5 个已折叠札记 × 2 点 = 10 条锚点', before, 10);
     const nv = d0.versions.length;
     let pickIds = [];
     fx.tidyFn = (ids) => { pickIds = [ids[0], ids[3]]; return [{ id: ids[0], result: '随事件结束' }, { id: ids[3], result: '已了结' }, { id: '不存在:1', result: '乱写' }, { id: ids[3], result: '重复项' }]; };
@@ -1957,7 +1957,7 @@ T('T33c M4 防失忆:锚点出处与整理锚点', async () => {
     const foldedN = d.capsules.filter(c => c.folded).length;
     fold.undoFold(ctxNow());
     d = data();
-    check('T33.16e 「撤销上一次折叠」能撤回整理:锚点恢复,胶囊仍折叠', memMod.activeAnchors(d).length === before && Object.keys(d.memory.retired).length === 0 && d.capsules.filter(c => c.folded).length === foldedN && d.versions.length === nv);
+    check('T33.16e 「撤销上一次折叠」能撤回整理:锚点恢复,札记仍折叠', memMod.activeAnchors(d).length === before && Object.keys(d.memory.retired).length === 0 && d.capsules.filter(c => c.folded).length === foldedN && d.versions.length === nv);
     fx.tidyFn = () => [];
     const rn = await recorder.tidyAnchorsExclusive(ctxNow());
     check('T33.16f 没有要撤下的:不压版本', rn.resolved === 0 && data().versions.length === nv);
@@ -2032,7 +2032,7 @@ async function runBenchmark() {
         chat.push({ name: 'User', is_user: true, is_system: false, mes: `u${k}:` + filler, extra: {}, send_date: 0 });
         chat.push({ name: 'Char', is_user: false, is_system: false, mes: `a${k}:` + filler, extra: {}, send_date: 0 });
     }
-    // 200 个胶囊:覆盖楼 0..995(102 个 2 轮 + 98 个 3 轮),一半已折叠
+    // 200 则札记:覆盖楼 0..995(102 个 2 轮 + 98 个 3 轮),一半已折叠
     const ctx = ctxNow();
     stateMod.beginEvent(ctx);
     const dd = stateMod.ensureData(ctx);
@@ -2043,7 +2043,7 @@ async function runBenchmark() {
         const ti = i === 199 ? 995 : fi + len - 1;
         for (let k = fi; k <= ti; k++) stateMod.assignFloorId(ctx, k);
         dd.capsules.push({ id: 'b' + i, fromId: chat[fi].extra.mnemo_id, toId: chat[ti].extra.mnemo_id, rangeHash: stateMod.rangeHash(ctx, fi, ti),
-            title: `记录${i}`, text: '一段胶囊正文'.repeat(8), tokens: 60, folded: i < 100, ts: Date.now(), // M4:已折叠的胶囊也保留正文和召回关键词
+            title: `记录${i}`, text: '一段札记正文'.repeat(8), tokens: 60, folded: i < 100, ts: Date.now(), // M4:已折叠的札记也保留正文和召回关键词
             keys: [`地${String(i).padStart(3, '0')}`, `物${String(i).padStart(3, '0')}`, `旅${String(i % 40).padStart(2, '0')}`, '主角'],
             points: ['物品', '数字', '伏笔'].map((k, j) => ({ id: `b${i}:${j}`, k, t: `第${i}条的${k}要点`, key: k === '伏笔' ? '' : `词${i}x${j}`, at: chat[ti].extra.mnemo_id })) });
         hide.hideRange(ctx, fi, ti, 997);
@@ -2058,13 +2058,13 @@ async function runBenchmark() {
     chat[chat.length - 1].mes += ' 地042 物042'; // 召回一条旧记录(测索引与命中的开销)
     const capCount = dd.capsules.length;
     const coveredTo = stateMod.idIndex(ctx, dd.capsules[capCount - 1].toId);
-    const out = [`chat=${chat.length} 楼 × ${chat[0].mes.length} 字,胶囊 ${capCount} 个(折叠 ${dd.capsules.filter(c => c.folded).length}),覆盖到第 ${coveredTo + 1} 楼`];
+    const out = [`chat=${chat.length} 楼 × ${chat[0].mes.length} 字,札记 ${capCount} 个(折叠 ${dd.capsules.filter(c => c.folded).length}),覆盖到第 ${coveredTo + 1} 楼`];
 
     // G. 切换聊天:整本核对一次
     const g = [];
     for (let i = 0; i < 5; i++) { const t0 = performance.now(); await eventSource.emit(eventTypes.CHAT_CHANGED, 'x'); g.push(performance.now() - t0); await api.whenIdle(); }
     out.push(`G 切换聊天(整本核对,仅此一次):` + JSON.stringify(stat(g)));
-    eq('基准前置:切换聊天后胶囊全部有效', data().capsules.length, 200);
+    eq('基准前置:切换聊天后札记全部有效', data().capsules.length, 200);
 
     const tip = chat.length - 1;
     const timeEvent = async (fn, n = 50) => {
@@ -2081,16 +2081,16 @@ async function runBenchmark() {
     };
     const A = await timeEvent(() => eventSource.emit(eventTypes.MESSAGE_RECEIVED, tip, 'normal'));
     out.push('A MESSAGE_RECEIVED(无新记录任务,含自动记录的规划):' + JSON.stringify(A));
-    const B = await timeEvent((i) => eventSource.emit(eventTypes.MESSAGE_EDITED, 3 + i * 19)); // 落在不同胶囊里,文本不变
-    out.push('B MESSAGE_EDITED(已覆盖的楼,文本未变,核对 1 个胶囊):' + JSON.stringify(B));
+    const B = await timeEvent((i) => eventSource.emit(eventTypes.MESSAGE_EDITED, 3 + i * 19)); // 落在不同札记里,文本不变
+    out.push('B MESSAGE_EDITED(已覆盖的楼,文本未变,核对 1 则札记):' + JSON.stringify(B));
     const Dd = await timeEvent(() => eventSource.emit(eventTypes.MESSAGE_EDITED, tip));
     out.push('D MESSAGE_EDITED(保留区的楼,无 id,零核对):' + JSON.stringify(Dd));
     const Hh = [];
     for (let i = 0; i < 200; i++) { const t0 = performance.now(); inject.refreshInject(ctxNow()); Hh.push(performance.now() - t0); }
-    out.push(`H 注入重算(300 个锚点 + 100 个带正文/keys 的已折叠胶囊召回 → 筛选 + 预算 + 拼装,每次收发消息都会跑一次):` + JSON.stringify(stat(Hh)));
+    out.push(`H 注入重算(300 个锚点 + 100 个带正文/keys 的已折叠札记召回 → 筛选 + 预算 + 拼装,每次收发消息都会跑一次):` + JSON.stringify(stat(Hh)));
     const E = await timeEvent(async () => { const m = chat.pop(); await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length); chat.push(m); await eventSource.emit(eventTypes.MESSAGE_RECEIVED, chat.length - 1, 'normal'); });
     out.push('E 删最后一层 + 重新收到(MESSAGE_DELETED + MESSAGE_RECEIVED):' + JSON.stringify(E));
-    // C. 编辑并作废(罕见路径):逐个改 50 个不同胶囊里的楼
+    // C. 编辑并作废(罕见路径):逐个改 50 个不同札记里的楼
     S({ autoRecord: false });
     const Cc = [];
     for (let i = 0; i < 50; i++) {
@@ -2100,7 +2100,7 @@ async function runBenchmark() {
         await eventSource.emit(eventTypes.MESSAGE_EDITED, idx);
         Cc.push(performance.now() - t0);
     }
-    out.push('C MESSAGE_EDITED(改动文本 → 胶囊作废 + 取消隐藏 + 重算注入,罕见路径):' + JSON.stringify(stat(Cc)));
+    out.push('C MESSAGE_EDITED(改动文本 → 札记作废 + 取消隐藏 + 重算注入,罕见路径):' + JSON.stringify(stat(Cc)));
     S({ autoRecord: true });
     // F. 新一轮落地 → 记录(mock LLM 的耗时单独扣除)
     await resetWorld({ reserve: 3 });
@@ -2112,7 +2112,7 @@ async function runBenchmark() {
         S({ batchMaxRounds: 12 });
         api.recorder.config.kickDelay = 0;
         await eventSource.emit(eventTypes.CHAT_CHANGED, 'f');
-        // 这里的 500 轮走补建,得到约 497 个胶囊;再把它折叠成接近 200 个的规模不是本项关注点,只量单次记录
+        // 这里的 500 轮走补建,得到约 497 则札记;再把它折叠成接近 200 个的规模不是本项关注点,只量单次记录
         await backfillAll();
     }
     const Fn = [];
@@ -2131,7 +2131,7 @@ async function runBenchmark() {
         void t0;
         Fn.push(emitMs + (api.perf.recordMs - p0) + (api.perf.planMs - q0));
     }
-    out.push(`F 一轮落地到记录完成(插件自身耗时:事件处理 + 规划 + 构造请求 + 胶囊写入/隐藏/注入,LLM 等待已扣除,聊天约 ${chat.length} 楼 / ${data().capsules.length} 个胶囊):` + JSON.stringify(stat(Fn)));
+    out.push(`F 一轮落地到记录完成(插件自身耗时:事件处理 + 规划 + 构造请求 + 札记写入/隐藏/注入,LLM 等待已扣除,聊天约 ${chat.length} 楼 / ${data().capsules.length} 则札记):` + JSON.stringify(stat(Fn)));
     // H2. 注入重算:20 个人物块 + 现场快照 + 300 个锚点(人物筛选与统计的开销)
     await resetWorld({ reserve: 3, foldThreshold: 1e9 });
     {
@@ -2165,9 +2165,9 @@ async function runBenchmark() {
     const ti0 = performance.now();
     await backfillAll();
     const iMs = performance.now() - ti0;
-    out.push(`I 提取模式补建 ${chat.length} 楼:${iMs.toFixed(0)} ms,${data().capsules.length} 个胶囊,LLM 请求 ${fx.calls.batch} 次`);
+    out.push(`I 提取模式补建 ${chat.length} 楼:${iMs.toFixed(0)} ms,${data().capsules.length} 则札记,LLM 请求 ${fx.calls.batch} 次`);
     const bytes = JSON.stringify(data()).length;
-    out.push(`存档体积:${data().capsules.length} 个胶囊 + 长期记忆 = ${(bytes / 1024).toFixed(1)} KB`);
+    out.push(`存档体积:${data().capsules.length} 则札记 + 长期记忆 = ${(bytes / 1024).toFixed(1)} KB`);
     const worst = Math.max(A.max, B.max, Dd.max, E.max, ...Hh.map(x => x), ...H2, Fn.length ? Math.max(...Fn) : 0);
     out.push(`单条消息事件最大耗时(A/B/D/E/F)= ${worst.toFixed(3)} ms,目标 < 5 ms:${worst < 5 ? '通过' : '未通过'}`);
     $('bench').textContent = out.join('\n');
@@ -2203,7 +2203,7 @@ async function seedDemo() {
         '## 人物与关系\n### 甲\n倾向:遇事先观察再开口,但对乙会主动让步\n当前:与乙结伴同行,在旅店守夜\n来由:#2 在站台先开口提出同行;#5–6 让出房间\n### 乙\n倾向:习惯独自行动,被追问来历时转移话题\n当前:答应结伴,对离开的理由仍避而不谈\n来由:#4 犹豫后点头;#7–8 第一次叫甲「前辈」\n\n' +
         '## 当前状态\n地点:旅店\n时间:次日清晨\n在场:甲、乙\n\n' +
         '## 时间线\n清晨:站台相遇\n白天:行李误会、结伴同行\n夜里:旅店守夜\n次日:路口分开\n\n## 未结事项\n乙没有说完的离开的理由。';
-    // M4:已折叠胶囊保留正文并带召回关键词;前情分三篇(第一篇由两篇合并而来,gen=2)
+    // M4:已折叠札记保留正文并带召回关键词;前情分三篇(第一篇由两篇合并而来,gen=2)
     const demoKeys = [['站台', '长椅'], ['结伴', '汇合'], ['同款车票', '行李'], ['旅店', '守夜']];
     d.capsules.slice(0, 4).forEach((c, i) => { c.keys = demoKeys[i]; });
     const chText = [
@@ -2218,7 +2218,7 @@ async function seedDemo() {
     chat[chat.length - 1].mes += '(她又想起那间只剩一间空房的旅店,和守夜时没说完的话。)'; // 让首页注入明细里能看到一条召回
     const demoPts = [['约定', '约好下周再见', '下周'], ['伏笔', '乙没有说完的离开的理由', ''], ['物品', '甲留下的联系方式纸条', '纸条'], ['称呼', '乙开始叫甲「前辈」', '前辈'], ['台词', '「天黑之前,我在这里等你。」', '天黑之前'], ['数字', '房费一共四千二百円', '四千二百']];
     d.capsules.slice(0, 4).forEach((c, i) => { c.points = demoPts.slice(i, i + 3).map(([k, t, key], j) => ({ id: `${c.id}:${j}`, k, t, key, at: c.toId })); });
-    // 物品档案演示:纸条带来历和现状;再给第一个胶囊补一件带别名的怀表
+    // 物品档案演示:纸条带来历和现状;再给第一则札记补一件带别名的怀表
     d.capsules[0].points.push({ id: `${d.capsules[0].id}:3`, k: '物品', t: '乙从祖父那里继承的银色怀表', key: '怀表/表', d: '祖父留下的旧物,盖里刻着一行小字,据说能带来好运', at: d.capsules[0].toId });
     const slip = d.capsules.flatMap(c => c.points).find(p => p.k === '物品' && p.key === '纸条');
     if (slip) slip.d = '甲临别时撕下笔记本的一页,写着联系方式';

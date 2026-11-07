@@ -1,6 +1,6 @@
 // 长期记忆的纯数据逻辑(不碰酒馆、不碰异步):分节 ⇄ 文本、锚点派生、版本链回退、旧版迁移。
-// 锚点不单独存正文:它是「已折叠胶囊的 points 去掉 retired」得到的派生视图,
-// 所以润色改不了它,删胶囊时它也跟着消失。
+// 锚点不单独存正文:它是「已折叠札记的 points 去掉 retired」得到的派生视图,
+// 所以润色改不了它,删札记时它也跟着消失。
 
 import { ANCHOR_TITLE, POINT_KINDS, SECTION_KEYS, SECTION_TITLES } from './prompts.js';
 
@@ -86,7 +86,7 @@ export function keysOf(a) {
 
 const CAP_KEYS_MAX = 6;
 const CAP_KEY_LEN = 20;
-/** 胶囊的召回关键词:去空、去重、每个最长 20 字、最多 6 个;数组或用逗号/顿号/斜杠分隔的字符串都收。 */
+/** 札记的召回关键词:去空、去重、每个最长 20 字、最多 6 个;数组或用逗号/顿号/斜杠分隔的字符串都收。 */
 export function normalizeKeys(raw) {
     const list = Array.isArray(raw) ? raw : (typeof raw === 'string' ? raw.split(/[\/,，、;；\n]/) : []);
     const out = [];
@@ -98,7 +98,7 @@ export function normalizeKeys(raw) {
     return out;
 }
 
-/** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整个胶囊失败)。 */
+/** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整则札记失败)。 */
 export function normalizePoints(raw, max = 5) {
     if (!Array.isArray(raw)) return [];
     const out = [];
@@ -142,8 +142,8 @@ export function normalizeNow(raw) {
 }
 
 /**
- * 派生锚点:folded 胶囊(或 extraIds 里的胶囊,折叠提交前预演用)的 points 去掉 retired。
- * 返回 [{ id, k, t, key, at, d, now, cap, p }],顺序 = 胶囊顺序 × 序号。
+ * 派生锚点:folded 札记(或 extraIds 里的札记,折叠提交前预演用)的 points 去掉 retired。
+ * 返回 [{ id, k, t, key, at, d, now, cap, p }],顺序 = 札记顺序 × 序号。
  * d = 物品的来历(在点上);now = 物品的现状(itemNow[id],可不传)。
  */
 export function deriveAnchors(caps, retired, extraIds = null, itemNow = null) {
@@ -209,7 +209,7 @@ export function rebuildText(data) {
 }
 
 // ── 锚点去重(只在折叠时跑,O(锚点数²),平时收发消息不碰) ──
-// 不同胶囊常把同一件事各记一条(同一约定被重申、同一数字在物品和数字里各记一次)。
+// 不同札记常把同一件事各记一条(同一约定被重申、同一数字在物品和数字里各记一次)。
 // 判重:内容互相包含,或者用字相似度高,或者(仅约定、称呼)同类别且 key 互相包含;台词只认相同或互相包含。
 // 保留较新的一条(代表最新状态);旧的那条完整包含新的,或同一约定旧的写得更长时,保留旧的(信息更全)。
 // 两条重复的物品,带来历 d 的优先保留(来历不经模型改写,丢了就补不回来)。
@@ -332,7 +332,7 @@ export function versionIndexOf(data, capId) {
     return -1;
 }
 
-/** 链里所有版本吞掉的胶囊 id(这些胶囊保留 text,也不参与占位合并)。 */
+/** 链里所有版本吞掉的札记 id(这些札记保留 text,也不参与占位合并)。 */
 export function protectedIds(data) {
     const s = new Set();
     for (const v of data?.versions || []) for (const id of v.foldedIds || []) s.add(id);
@@ -340,7 +340,7 @@ export function protectedIds(data) {
 }
 
 /**
- * 回退到第 j 版之前:memory = versions[j].before;j 到最新这几版吞掉的胶囊恢复成未折叠(goneIds 里的直接移除);
+ * 回退到第 j 版之前:memory = versions[j].before;j 到最新这几版吞掉的札记恢复成未折叠(goneIds 里的直接移除);
  * versions 截到 j 之前。返回 { restored, removed }。
  */
 export function rollbackVersions(data, j, goneIds = new Set()) {
@@ -385,7 +385,7 @@ function migrateV1(d) {
     const prev = d.memoryPrev;
     if (prev && typeof prev === 'object') {
         const ids = (prev.undo?.ids || []).filter(id => byId.has(id));
-        // v1 折叠时把正文挪进了 undo.texts;新结构要求链里的胶囊保留 text,迁移时放回去
+        // v1 折叠时把正文挪进了 undo.texts;新结构要求链里的札记保留 text,迁移时放回去
         for (const id of ids) {
             const saved = prev.undo?.texts?.[id];
             const cap = byId.get(id);

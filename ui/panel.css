@@ -89,7 +89,8 @@
 
 /* 页标题 */
 .mn-page-head { position: relative; text-align: center; margin: 0 0 14px; padding: 0 36px; }
-.mn-page-head h2 { margin: 0; display: inline-flex; align-items: center; gap: 10px; font-weight: 500; font-size: 26px; letter-spacing: .3em; padding-left: .3em; color: var(--title); }
+.mn-page-head h2 { margin: 0; display: inline-flex; align-items: center; gap: 10px; font-weight: 500; font-size: clamp(20px, 6.2vw, 26px); letter-spacing: .3em; padding-left: .3em; color: var(--title); white-space: nowrap; max-width: 100%; }
+@media (max-width: 380px) { .mn-page-head h2 { letter-spacing: .18em; padding-left: .18em; gap: 6px; } }
 .mn-page-sub { display: block; margin-top: 2px; font-size: 13px; color: var(--text2); }
 .mn-edit-link { position: absolute; right: -4px; top: -2px; }
 .mn-sec-sub { margin: 0 0 12px; text-align: center; font-size: 13px; color: var(--text2); }
@@ -249,7 +250,7 @@
 .mn-mini { flex: none; width: 36px; height: 36px; border: 0; background: transparent; color: var(--text2); display: flex; align-items: center; justify-content: center; border-radius: 10px; margin-right: -8px; }
 .mn-mini svg { width: 19px; height: 19px; }
 
-/* 胶囊列表:紧凑两行 */
+/* 札记列表:紧凑两行 */
 .mn-cap { border-bottom: 1px solid var(--line-soft); }
 .mn-cap:last-of-type { border-bottom: 0; }
 .mn-cap-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 2px; border: 0; background: transparent; text-align: left; min-height: 56px; }

@@ -7,7 +7,7 @@ export const ICON_CLOSE = S('<path d="M6 6l12 12M18 6L6 18"/>', 'stroke-width="2
 export const ICON_CHEVRON = S('<path d="M9 5l7 7-7 7"/>');
 export const ICON_CHEVRON_DOWN = S('<path d="M5 9l7 7 7-7"/>');
 export const ICON_HOME = S('<path d="M4 11.5 12 4l8 7.5"/><path d="M6 10v9.5h4.5v-5h3v5H18V10"/>');
-export const ICON_CAPSULE = S('<rect x="3.5" y="9" width="17" height="6.5" rx="3.25" transform="rotate(-35 12 12.25)"/><path d="m9.2 7.9 6.6 6.4" />');
+export const ICON_NOTE = S('<path d="M6 3.5h8.5L18.5 7.5V20a.5.5 0 0 1-.5.5H6a.5.5 0 0 1-.5-.5V4a.5.5 0 0 1 .5-.5Z"/><path d="M14.5 3.5v4h4"/><path d="M8.5 11.5h7M8.5 14.5h7M8.5 17.5h4.5"/>');
 export const ICON_BOOK = S('<path d="M12 6.5C10 5 7 4.6 4 5v13c3-.4 6 0 8 1.5 2-1.5 5-1.9 8-1.5V5c-3-.4-6 0-8 1.5Z"/><path d="M12 6.5v13"/>');
 export const ICON_GEAR = S('<circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18"/>');
 export const ICON_PEN = S('<path d="M4 20l1-4.2L16.6 4.2a1.8 1.8 0 0 1 2.6 0l.6.6a1.8 1.8 0 0 1 0 2.6L8.2 19 4 20Z"/><path d="m14.5 6.3 3.2 3.2"/>');

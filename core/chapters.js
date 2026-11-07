@@ -8,7 +8,7 @@ import { asText, estimateTokens, sectionsFromText } from './memory.js';
 export const LEGACY_CHAPTER_ID = 'ch-legacy';
 export const makeChapterId = () => 'ch' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3);
 
-/** 已折叠胶囊覆盖的整段楼层(推导旧前情的范围用);没有已折叠胶囊时两端为 null。 */
+/** 已折叠札记覆盖的整段楼层(推导旧前情的范围用);没有已折叠札记时两端为 null。 */
 function foldedSpan(caps) {
     let first = null, last = null;
     for (const c of caps || []) {

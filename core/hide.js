@@ -94,9 +94,9 @@ export function syncReserve(ctx, reserve) {
 }
 
 /**
- * 整理:登记在册的隐藏楼若已不在任何胶囊范围内(胶囊作废)就取消隐藏、楼已不存在就从登记里去掉;
+ * 整理:登记在册的隐藏楼若已不在任何札记范围内(札记作废)就取消隐藏、楼已不存在就从登记里去掉;
  * withHide=true 时再把「被覆盖且在保留区之前、还没隐藏」的正文楼补隐藏(换聊天时用)。
- * O(隐藏数 · log 胶囊数),withHide 时多一遍 O(被覆盖楼层数)。返回 { unhidden, hidden }。
+ * O(隐藏数 · log 札记数),withHide 时多一遍 O(被覆盖楼层数)。返回 { unhidden, hidden }。
  */
 export function reconcile(ctx, reserve, { withHide = false } = {}) {
     const data = peekData(ctx);
@@ -116,7 +116,7 @@ export function reconcile(ctx, reserve, { withHide = false } = {}) {
     for (const id of data.hiddenIds) {
         const i = idIndex(ctx, id);
         if (i < 0) continue;                       // 楼已被删
-        if (!covered(i)) {                         // 胶囊已作废:取消隐藏
+        if (!covered(i)) {                         // 札记已作废:取消隐藏
             const m = ctx.chat[i];
             if (m?.is_system) { m.is_system = false; setDomHidden(i, false); out.unhidden++; }
             continue;

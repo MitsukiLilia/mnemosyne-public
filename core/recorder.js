@@ -5,7 +5,7 @@
 //   正文楼  = isStory(非原生系统消息);
 //   一轮    = 连续的用户楼 + 其后的角色楼(连续角色楼并入同一轮);
 //   完整轮  = 整轮都在保留区之前,且后面接的是用户楼(或没有后文)。
-// 断点不靠游标:每次都从「哪些楼还没被胶囊覆盖」重新推出来,所以中途编辑/删楼不会错位。
+// 断点不靠游标:每次都从「哪些楼还没被札记覆盖」重新推出来,所以中途编辑/删楼不会错位。
 
 import {
     assignFloorId, countTokens, coverage, ensureData, estimateTokens, fingerprint, insertCapsule,
@@ -59,8 +59,8 @@ function floorCost(msg) {
 }
 
 /**
- * 收集 [startIdx, boundary) 内、未被胶囊覆盖的完整轮。max 限制最多收几轮(提前结束,省遍历)。
- * ignoreCoverage=true 时无视现有胶囊(重写单个胶囊用)。
+ * 收集 [startIdx, boundary) 内、未被札记覆盖的完整轮。max 限制最多收几轮(提前结束,省遍历)。
+ * ignoreCoverage=true 时无视现有札记(重写单则札记用)。
  */
 export function collectRounds(ctx, startIdx, boundary, { max = Infinity, ignoreCoverage = false } = {}) {
     const chat = ctx.chat;
@@ -131,7 +131,7 @@ export function countPending(ctx) {
     return collectRounds(ctx, 0, boundary).length;
 }
 
-// ── 一批 → 胶囊 ──
+// ── 一批 → 札记 ──
 
 function speaker(ctx, msg) { return msg.name || (msg.is_user ? ctx.name1 : ctx.name2) || (msg.is_user ? 'User' : 'Char'); }
 
@@ -178,7 +178,7 @@ export function normalizeCapsules(parsed, n, maxPoints = 5) {
     return out;
 }
 
-/** 必留点落库:补 id(`${胶囊id}:${序号}`)和来源楼 at(胶囊终点)。 */
+/** 必留点落库:补 id(`${札记id}:${序号}`)和来源楼 at(札记终点)。 */
 function stampPoints(cap, points) {
     return points.map((p, i) => ({ id: `${cap.id}:${i}`, k: p.k, t: p.t, key: p.key, ...(p.d ? { d: p.d } : {}), at: cap.toId }));
 }
@@ -187,7 +187,7 @@ const maxPointsOf = (settings) => Math.max(0, Math.min(10, Math.floor(Number(set
 
 function makeCapId() { return 'c' + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3); }
 
-/** 请求 + 提交一批。返回新增胶囊数;抛错表示失败(调用方设错误状态)。 */
+/** 请求 + 提交一批。返回新增札记数;抛错表示失败(调用方设错误状态)。 */
 // ── 失败处理:只有「像是内容被拦」才拆批 ──
 // 酒馆对自定义渠道只回传状态文字(如 Bad Request),审查拦截的细节留在服务器日志里,所以靠规则判断:
 //   hard  —— 渠道问题(鉴权/限流/5xx/断网/用户中止):直接抛出,不拆批;
@@ -583,7 +583,7 @@ export async function startBackfill(ctx) {
                 if (!added) { outcome = 'stale'; break; }
                 if (src.mode === 'extract') status.extract.llm += pack.length;
                 bf.done++;
-                if (needsFold(ctx)) await foldWhileNeeded(ctx); // 攒够阈值就顺手折叠,不让胶囊堆几百个
+                if (needsFold(ctx)) await foldWhileNeeded(ctx); // 攒够阈值就顺手折叠,不让札记堆几百个
             }
             if (outcome === 'finished') { bf.finished = true; status.backlog = 0; }
         } catch (err) {
@@ -602,15 +602,15 @@ export async function startBackfill(ctx) {
     });
 }
 
-// ── 按原文重写单个胶囊 ──
+// ── 按原文重写单则札记 ──
 
 export async function rewriteCapsule(ctx, capId) {
     return await runExclusive('rewrite', async () => {
         const settings = getSettings(ctx);
         const data = peekData(ctx);
         const cap = data?.capsules.find(c => c.id === capId);
-        if (!cap) throw new Error('找不到这个胶囊');
-        if (cap.folded) throw new Error('已折叠的胶囊已并入长期记忆,不能重写');
+        if (!cap) throw new Error('找不到这则札记');
+        if (cap.folded) throw new Error('已折叠的札记已并入长期记忆,不能重写');
         beginEvent(ctx);
         const { fi, ti } = resolveCapsule(ctx, cap);
         if (fi < 0 || ti < fi) throw new Error('原文楼层已不存在');
@@ -671,7 +671,7 @@ export function setSource(ctx, patch) {
 }
 
 /**
- * 清除本聊天的全部记忆数据:先放出我们藏的楼,再删掉胶囊/长期记忆/锚点/版本链/补建进度。
+ * 清除本聊天的全部记忆数据:先放出我们藏的楼,再删掉札记/长期记忆/锚点/版本链/补建进度。
  * 只保留「摘要来源」这项聊天设置。任务进行中拒绝。返回 { ok, unhidden } 或 { skipped }。
  */
 export function clearChatData(ctx) {
