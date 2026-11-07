@@ -48,7 +48,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
     let raf = 0;
     const ui = {
         expanded: new Set(), editingCap: null, editingMem: false, confirmDel: null, confirmRestore: false, confirmClear: false,
-        capLimit: 30, memOpen: new Set(), anchorLimit: 40, retiredOpen: false, srcOpen: false, injOpen: false, scan: null, tagScan: null, models: { loading: false, list: [], error: '' }, toast: '',
+        capLimit: 30, memOpen: new Set(), anchorOpen: new Set(), anchorLimits: {}, retiredOpen: false, srcOpen: false, injOpen: false, scan: null, tagScan: null, models: { loading: false, list: [], error: '' }, toast: '',
     };
 
     const ctx = () => getCtx();
@@ -267,25 +267,34 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         return fi === ti ? `#${fi + 1}` : `#${fi + 1}–${ti + 1}`;
     }
 
+    const ANCHOR_STEP = 30;
     function anchorsBlock(c, data) {
         const list = activeAnchors(data);
         const gone = retiredAnchors(data);
         if (!list.length && !gone.length) return '';
-        const sorted = [];
-        for (const k of POINT_KINDS) for (const a of list) if (a.k === k) sorted.push(a);
-        const shown = sorted.slice(0, ui.anchorLimit);
         let html = `<section class="mn-sec mn-anchors">${secHead('锚点')}<p class="mn-sec-sub">${list.length} 条生效</p>
             <p class="mn-hint">折叠时由胶囊的必留点汇成,润色改不动它们。伏笔、约定、推测始终注入(推测会标「未证实」),其余类别在相关词出现于最近几层时才注入。物品会带上来历和现状,同一件东西会被合并成一条。</p>`;
         if (!list.length) html += '<p class="mn-dim">(暂无生效的锚点)</p>';
-        for (const a of shown) {
-            const itemMeta = a.k === '物品'
-                ? `${a.d ? `<span class="mn-anchor-meta">来历 · ${esc(a.d)}</span>` : ''}${a.now?.t ? `<span class="mn-anchor-meta">现状 · ${esc(a.now.t)}${a.now.at ? ` #${a.now.at}` : ''}</span>` : ''}`
-                : '';
-            html += `<div class="mn-anchor">${pearl}<span class="mn-tag" data-kind="${esc(a.k)}">${esc(a.k)}</span>${dots}
-                <span class="mn-anchor-main"><span class="mn-anchor-text">${esc(a.t)}</span>${itemMeta}<span class="mn-anchor-meta">${esc(anchorRange(c, a.cap))}${a.key ? ` · ${esc(a.key)}` : ''}</span></span>
-                <button class="mn-mini" data-action="retire-anchor" data-id="${esc(a.id)}" aria-label="撤下" title="撤下">${I.ICON_RETIRE}</button></div>`;
+        // 按类别分组,每组默认收起;展开后每次显示 ANCHOR_STEP 条
+        for (const k of POINT_KINDS) {
+            const group = list.filter(a => a.k === k);
+            if (!group.length) continue;
+            const open = ui.anchorOpen.has(k);
+            html += `<button class="mn-agroup" data-action="toggle-akind" data-kind="${esc(k)}" aria-expanded="${open}"><span class="mn-tag" data-kind="${esc(k)}">${esc(k)}</span>${dots}<span class="mn-agroup-n">${group.length} 条</span><span class="mn-chev${open ? ' down' : ''}">${I.ICON_CHEVRON}</span></button>`;
+            if (!open) continue;
+            const limit = ui.anchorLimits[k] || ANCHOR_STEP;
+            html += '<div class="mn-agroup-body">';
+            for (const a of group.slice(0, limit)) {
+                const itemMeta = a.k === '物品'
+                    ? `${a.d ? `<span class="mn-anchor-meta">来历 · ${esc(a.d)}</span>` : ''}${a.now?.t ? `<span class="mn-anchor-meta">现状 · ${esc(a.now.t)}${a.now.at ? ` #${a.now.at}` : ''}</span>` : ''}`
+                    : '';
+                html += `<div class="mn-anchor">${pearl}
+                    <span class="mn-anchor-main"><span class="mn-anchor-text">${esc(a.t)}</span>${itemMeta}<span class="mn-anchor-meta">${esc(anchorRange(c, a.cap))}${a.key ? ` · ${esc(a.key)}` : ''}</span></span>
+                    <button class="mn-mini" data-action="retire-anchor" data-id="${esc(a.id)}" aria-label="撤下" title="撤下">${I.ICON_RETIRE}</button></div>`;
+            }
+            if (group.length > limit) html += `<button class="mn-btn mn-btn-wide" data-action="more-anchors" data-kind="${esc(k)}">再显示 ${Math.min(ANCHOR_STEP, group.length - limit)} 条(还剩 ${group.length - limit})</button>`;
+            html += '</div>';
         }
-        if (sorted.length > shown.length) html += `<button class="mn-btn mn-btn-wide" data-action="more-anchors">再显示 ${Math.min(40, sorted.length - shown.length)} 条(还剩 ${sorted.length - shown.length})</button>`;
         if (gone.length) {
             html += `<button class="mn-link mn-link-l" data-action="toggle-retired" aria-expanded="${ui.retiredOpen}"><span>已撤下 ${gone.length} 条</span><span class="mn-chev${ui.retiredOpen ? ' down' : ''}">${I.ICON_CHEVRON}</span></button>`;
             if (ui.retiredOpen) {
@@ -557,7 +566,8 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             case 'restore-anchor': restoreAnchor(c, id); render(); return;
             case 'toggle-sec': ui.memOpen.has(el.dataset.key) ? ui.memOpen.delete(el.dataset.key) : ui.memOpen.add(el.dataset.key); render(); return;
             case 'toggle-retired': ui.retiredOpen = !ui.retiredOpen; render(); return;
-            case 'more-anchors': ui.anchorLimit += 40; render(); return;
+            case 'more-anchors': { const k = el.dataset.kind; ui.anchorLimits[k] = (ui.anchorLimits[k] || ANCHOR_STEP) + ANCHOR_STEP; render(); return; }
+            case 'toggle-akind': { const k = el.dataset.kind; ui.anchorOpen.has(k) ? ui.anchorOpen.delete(k) : ui.anchorOpen.add(k); render(); return; }
             case 'fold-now': {
                 toast('折叠中……');
                 try { const r = await foldNowExclusive(c); toast(r?.folded ? `已折叠 ${r.folded} 个胶囊${r.polished ? '' : '(本次用了草稿)'}` : '没有折叠'); }

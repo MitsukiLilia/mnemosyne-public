@@ -299,6 +299,11 @@
 .mn-root[data-theme="day"] .mn-tag { background: #E8EFF8; border-color: var(--line); }
 .mn-tag[data-kind="伏笔"], .mn-tag[data-kind="约定"] { border-color: var(--accent-strong); }
 .mn-tag[data-kind="推测"] { border-style: dashed; }
+.mn-agroup { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 46px; padding: 6px 0; border: 0; border-bottom: 1px dashed var(--line-soft); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.mn-agroup .mn-dots { align-self: center; }
+.mn-agroup-n { flex: none; font-size: 13.5px; color: var(--text2); }
+.mn-agroup .mn-chev { margin-left: 2px; }
+.mn-agroup-body { margin: 4px 0 6px 8px; padding-left: 12px; border-left: 1px solid var(--line-soft); }
 .mn-anchors code, .mn-hint code { font-family: ui-monospace, monospace; color: var(--text); }
 .mn-anchors .mn-sec-sub { margin: -4px 0 6px; }
 

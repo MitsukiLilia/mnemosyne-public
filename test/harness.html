@@ -1422,6 +1422,28 @@ T('T30 面板:摘要来源与注入卡片', async () => {
     api.panel.close();
 });
 
+T('T32 主线筛选提示词 + 锚点按类别分组折叠', async () => {
+    const P = await import('../core/prompts.js');
+    const cp = P.capsulePrompt(5);
+    check('T32.1 胶囊提示词:必留点按「主线」判断,单个事件内部的细节不收', cp.includes('判断标准是「主线」') && cp.includes('只在某一个独立事件内部起作用'));
+    check('T32.2 台词只收主要人物之间的话', cp.includes('台词:主要人物之间'));
+    check('T32.3 折叠提示词:随事件结束撤下', P.PROMPT_FOLD_MERGE.includes('随事件结束'));
+    await seedDemo();
+    api.panel.open('memory'); api.panel.renderNow();
+    const root = () => document.getElementById('mnemosyne-host').shadowRoot;
+    const groups = root().querySelectorAll('[data-action="toggle-akind"]');
+    check('T32.4 每个有锚点的类别一个分组头', groups.length >= 3, String(groups.length));
+    eq('T32.5 默认全部收起:生效锚点行一条都不显示', root().querySelectorAll('.mn-anchors .mn-anchor:not(.mn-anchor-off)').length, 0);
+    const n = Number((root().querySelector('[data-action="toggle-akind"][data-kind="物品"] .mn-agroup-n')?.textContent || '').replace(/\D/g, ''));
+    root().querySelector('[data-action="toggle-akind"][data-kind="物品"]').click();
+    await new Promise(r => setTimeout(r, 20));
+    eq('T32.6 点开物品:只显示物品那一组', root().querySelectorAll('.mn-anchors .mn-agroup-body .mn-anchor').length, n);
+    root().querySelector('[data-action="toggle-akind"][data-kind="物品"]').click();
+    await new Promise(r => setTimeout(r, 20));
+    eq('T32.7 再点收起', root().querySelectorAll('.mn-anchors .mn-agroup-body').length, 0);
+    api.panel.close();
+});
+
 T('T31 物品档案:来历 d / 别名 / 现状 itemNow / 合并 / 注入', async () => {
     // 1. normalizePoints
     const np = memMod.normalizePoints([
@@ -1487,6 +1509,8 @@ T('T31 物品档案:来历 d / 别名 / 现状 itemNow / 合并 / 注入', async
     // 面板
     api.panel.open('memory');
     const root = () => document.getElementById('mnemosyne-host').shadowRoot;
+    root().querySelector('[data-action="toggle-akind"][data-kind="物品"]')?.click(); // 锚点按类别默认收起
+    await new Promise(r => setTimeout(r, 20));
     check('T31.6a 面板:来历/现状两行小字,现状带楼号', root().textContent.includes('来历 · 祖父留下的旧怀表') && root().textContent.includes('现状 · 被乙借走,在乙手里 #3'), root().textContent.slice(0, 200));
     check('T31.6b 面板:锚点节说明补了半句', root().textContent.includes('同一件东西会被合并成一条'));
     api.panel.close();
