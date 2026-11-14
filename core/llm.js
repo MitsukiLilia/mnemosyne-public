@@ -1,3 +1,5 @@
+import { langNote } from './prompts.js';
+
 // 模型调用:独立 API > 指定 Connection Profile > 酒馆当前连接(裸调用)。
 // 裸调用带防污染卫兵:发送前酒馆会广播 CHAT_COMPLETION_PROMPT_READY,别的扩展可能借它向所有请求
 // 注入自家指令。这里在该事件上挂最后一个监听,只认领本次请求的 system/user 两条消息,把外来消息剔掉。
@@ -137,8 +139,9 @@ export async function callLLM(ctx, systemPrompt, userContent, { profileId, custo
 
 /** 取 JSON:解析失败才重试一次;调用本身失败(网络/鉴权)直接抛,不轰炸。 */
 export async function generateJson(ctx, systemPrompt, userContent, opts) {
+    const sys = systemPrompt + langNote(opts?.lang);
     for (let i = 0; i < 2; i++) {
-        const raw = await callLLM(ctx, systemPrompt, userContent, opts);
+        const raw = await callLLM(ctx, sys, userContent, opts);
         const parsed = parseLenientJson(raw);
         if (parsed) return parsed;
     }
@@ -147,7 +150,7 @@ export async function generateJson(ctx, systemPrompt, userContent, opts) {
 
 /** 取纯文本(去围栏)。空内容视为失败。 */
 export async function generateText(ctx, systemPrompt, userContent, opts) {
-    const raw = await callLLM(ctx, systemPrompt, userContent, opts);
+    const raw = await callLLM(ctx, systemPrompt + langNote(opts?.lang), userContent, opts);
     const s = String(raw || '').replace(/^\s*```[a-z]*\s*/i, '').replace(/\s*```\s*$/i, '').trim();
     if (!s) throw new Error('模型返回了空内容');
     return s;
@@ -155,5 +158,5 @@ export async function generateText(ctx, systemPrompt, userContent, opts) {
 
 /** 从设置里取模型连接选项。 */
 export function llmOptsFrom(settings) {
-    return { profileId: settings.profileId || null, customApi: settings.customApi };
+    return { profileId: settings.profileId || null, customApi: settings.customApi, lang: settings.recordLang || 'zh' };
 }

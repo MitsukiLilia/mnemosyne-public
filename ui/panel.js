@@ -442,6 +442,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             <label class="mn-field"><span class="mn-field-label">位置</span>${selectHtml('injectPosition', s.injectPosition, [[1, '聊天内'], [0, '主提示词之后'], [2, '主提示词之前']])}</label>
             ${numField('injectDepth', '深度', s.injectDepth ?? '', { min: 0, max: 200, placeholder: `跟随保留楼层数(${s.reserve})`, hint: '仅「聊天内」有效;留空 = 等于保留楼层数' })}
             <label class="mn-field"><span class="mn-field-label">角色</span>${selectHtml('injectRole', s.injectRole, [[0, 'system'], [1, 'user'], [2, 'assistant']])}</label>
+            <label class="mn-field"><span class="mn-field-label">记录语言</span>${selectHtml('recordLang', s.recordLang, [['zh', '简体中文'], ['ja', '日本語']])}<span class="mn-hint">札记、长期记忆和注入给模型的标签用哪种语言写。正文是日语时选「日本語」。已有的记录不会自动改写。</span></label>
             <label class="mn-field"><span class="mn-field-label">注入方式</span>${selectHtml('injectMode', s.injectMode, [['auto', '自动'], ['macro', '宏']])}${s.injectMode === 'macro' ? '<span class="mn-hint">已不再自动注入。把 <code>{{mnemosyne}}</code> 写进预设或角色卡里想放的位置,生成时会替换成长期记忆全文。</span>' : '<span class="mn-hint">自动 = 按下面的位置/深度/角色注入</span>'}</label>
             ${numField('anchorRecentFloors', '锚点参考的最近楼层数', s.anchorRecentFloors, { min: 1, max: 50, hint: '物品、数字、称呼、台词类锚点,相关词出现在这几层正文里才注入' })}
             ${numField('recallMax', '召回旧记录条数', s.recallMax, { min: 0, max: 10, hint: '最近几层提到某段旧记录的关键词时,把那段原始记录带回来;0 = 关闭' })}

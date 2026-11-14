@@ -23,6 +23,7 @@ export const DEFAULT_SETTINGS = {
     timelineInjectLines: 0,  // 时间线注入条数;0 = 全部(时间线像目录,默认整条带上;存储本身折叠时封顶 30 行)
     injectWarnTokens: 12000, // 上次注入超过它,首页的注入卡片标黄
     excludeTags: '',
+    recordLang: 'zh',        // 记录语言:'zh' 简体中文 / 'ja' 日语(正文是日语时用;记录和注入的标签都跟着换)
     profileId: '',
     customApi: { enabled: false, baseUrl: '', apiKey: '', model: '' },
     showFab: true,

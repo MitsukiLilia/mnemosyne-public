@@ -8,7 +8,7 @@
 
 import { peekData, maxContextSize, isStory, estimateTokens, resolveCapsule } from './state.js';
 import { getSettings, effectiveDepth } from './settings.js';
-import { MEMORY_HEADER, PEOPLE_HEADER, POINT_KINDS, SECTION_KEYS, SECTION_TITLES, ANCHOR_TITLE, RECALL_TITLE, RECALL_HEADER } from './prompts.js';
+import { MEMORY_HEADER, PEOPLE_HEADER, POINT_KINDS, SECTION_KEYS, SECTION_TITLES, ANCHOR_TITLE, RECALL_TITLE, RECALL_HEADER, localizeInjection } from './prompts.js';
 import { PEOPLE_LIMIT, parsePeople, presentLine, selectPeople } from './people.js';
 import { activeAnchors, anchorLine, asText, keysOf, sectionsFromText } from './memory.js';
 import { selectRecall } from './recall.js';
@@ -217,7 +217,7 @@ export function buildInjection(ctx, settings) {
         peopleIn, peopleOut, anchorsIn: anchors.map(a => a.id), anchorsOut: rejected,
         recall: recall.map(r => ({ id: r.id, range: r.range, hits: r.hits })),
     };
-    return parts.join('\n');
+    return localizeInjection(parts.join('\n'), settings.recordLang);
 }
 
 /** 宏的输出:与自动注入同一份文本;插件关闭时为空。 */
