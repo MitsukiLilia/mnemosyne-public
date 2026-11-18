@@ -3,12 +3,12 @@
 // 润色后本地核对,丢了锚点关键词或缩水太多就退回草稿。
 // 前情分篇章:每次折叠只为这批新记录写一篇,接在已有篇章之后;已写好的篇章不再改写。
 // 篇章合计超过 preludeBudget 时,折叠提交后再把最早的两篇合并一次(本地核对不过就原样保留,下次再试)。
-// 每次折叠往版本链里压一版 { before: 折叠前的 memory 快照, foldedIds },最多 memoryVersions 版;
+// 每次折叠往版本链里压一版 { before: 折叠前的 memory 快照, foldedIds },最近 memoryVersions 版可逐版撤销,更早的每隔一段留一个存档点(见 trimVersions);
 // 篇章合并、整理锚点各自再压一版(foldedIds 为空),所以连续撤销先撤它们,再撤折叠。
 // 折叠后札记保留正文(供关键词召回);只有旧版本留下的、没有正文的占位才会被并在一起(points 拼起来保留)。
 
 import {
-    beginEvent, countTokens, coverage, ensureData, isStory, liveMeta, peekData, rangeHash, resolveCapsule, scheduleSave,
+    beginEvent, countTokens, coverage, ensureData, idIndex, isStory, liveMeta, peekData, rangeHash, resolveCapsule, scheduleSave,
 } from './state.js';
 import { getSettings } from './settings.js';
 import { generateJson, generateText, llmOptsFrom } from './llm.js';
@@ -103,11 +103,49 @@ function coalesceOlderFolded(ctx, data, keepIds) {
     data.capsules = out;
 }
 
-/** 版本挤出链尾:只是丢掉最旧的版本(札记正文一直保留,供关键词召回)。 */
-function trimVersions(data, limit) {
+/** 存档点的间隔(楼):比最近几版更早的版本,大约每这么多楼留一个。做成对象是为了测试台能调小。 */
+export const foldConfig = { checkpointFloors: 50 };
+
+/**
+ * 版本链整理:最近 limit 版原样保留(可逐版撤销);更早的降为「存档点」(cp),大约每 checkpointFloors 楼留一个。
+ * 存档点只用来在删楼、开分支之后把长期记忆退回到够早的状态,不计入可撤销次数。
+ * 一版的位置 = 它吞掉的札记里最靠前的那一楼(before 快照就是整理到这一楼之前的长期记忆)。
+ * 被略过的版本,吞掉的札记并进它前面那个存档点:退回到那个存档点时,这些札记一并恢复成未折叠、重新整理。
+ * 没有吞掉札记的版本(前情篇章合并、整理锚点)和位置解析不到的,只在最近 limit 版里保留。
+ */
+function trimVersions(ctx, data, limit) {
     const vs = data.versions;
-    while (vs.length > limit) vs.shift();
+    if (vs.length <= limit) return;
+    const older = vs.slice(0, vs.length - limit);
+    const recent = vs.slice(vs.length - limit);
+    const byId = new Map(data.capsules.map(c => [c.id, c]));
+    const posOf = (v) => {
+        let min = -1;
+        for (const id of v.foldedIds || []) {
+            const cap = byId.get(id);
+            const fi = cap ? idIndex(ctx, cap.fromId) : -1;
+            if (fi >= 0 && (min < 0 || fi < min)) min = fi;
+        }
+        return min;
+    };
+    const kept = [];
+    let lastPos = -1;
+    for (const v of older) {
+        const pos = posOf(v);
+        const last = kept[kept.length - 1];
+        if (pos >= 0 && (!last || pos >= lastPos + foldConfig.checkpointFloors)) {
+            v.cp = true;
+            if (v.before && v.before.text) v.before = { ...v.before, text: '' }; // 全文可以由分节重建,存档点不留这份重复
+            kept.push(v); lastPos = pos;
+        } else if (last && v.foldedIds?.length) {
+            last.foldedIds = [...new Set([...(last.foldedIds || []), ...v.foldedIds])];
+        }
+    }
+    data.versions = [...kept, ...recent];
 }
+
+/** 可逐版撤销的版本数(存档点不算)。 */
+export const undoableCount = (data) => (data?.versions || []).filter(v => !v.cp).length;
 
 const versionLimit = (settings) => Math.max(1, Math.floor(Number(settings.memoryVersions) || 5));
 
@@ -257,7 +295,7 @@ async function mergeOldestChapters(ctx, data, settings, opts, meta) {
     const chapters = [merged, ...chs.slice(2)];
     data.memory = { ...mem, sections: { ...mem.sections, prelude: joinChapters(chapters) }, chapters, ts: Date.now() };
     rebuildText(data);
-    trimVersions(data, versionLimit(settings));
+    trimVersions(ctx, data, versionLimit(settings));
     scheduleSave(ctx);
     refreshInject(ctx);
     return true;
@@ -374,7 +412,7 @@ export async function foldNow(ctx) {
         data.memory = { sections, chapters, retired, itemNow, text, tokens, ts: Date.now() };
         committed = true;
         for (const c of batch) c.folded = true; // 正文保留:撤销要能原样恢复,日后也供关键词召回
-        trimVersions(data, versionLimit(settings));
+        trimVersions(ctx, data, versionLimit(settings));
         coalesceOlderFolded(ctx, data, protectedIds(data));
         status.lastFold = { ts: Date.now(), polished, reason };
         if (reason && draft) pushNotice(`本次用了草稿:${reason}`);
@@ -412,7 +450,7 @@ export async function foldWhileNeeded(ctx) {
 export function undoFold(ctx) {
     const data = peekData(ctx);
     const v = data?.versions?.[data.versions.length - 1];
-    if (!v) return false;
+    if (!v || v.cp) return false; // 存档点不逐版撤销:它只在删楼、开分支后用来回退
     for (const id of v.foldedIds || []) {
         const cap = data.capsules.find(c => c.id === id);
         if (cap) cap.folded = false;
@@ -521,7 +559,7 @@ export async function tidyAnchors(ctx) {
         for (const id of ids) delete itemNow[id]; // 锚点没了,现状一并清掉
         data.memory = { ...oldMem, retired: { ...(oldMem.retired || {}), ...resolved }, itemNow, ts: Date.now() };
         rebuildText(data);
-        trimVersions(data, versionLimit(settings));
+        trimVersions(ctx, data, versionLimit(settings));
         scheduleSave(ctx);
         refreshInject(ctx);
     }

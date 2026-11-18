@@ -295,11 +295,11 @@ function checkCapsule(ctx, cap) {
  * 调用方负责取消隐藏、重算注入、弹通知。
  * 已折叠札记被删时分两种:
  *   ① 它在版本链里(text 还保留):长期记忆回退到吞掉它的那一版之前,之后吞进去的札记恢复成未折叠;
- *   ② 它是已并成占位的老札记:照旧收缩范围,再把来源楼已经不存在的 points 丢掉。
+ *   ② 它比最早的存档点还早(旧聊天、或聊天很短时的头几版):退不回去,照旧收缩范围、丢掉来源楼已经不存在的 points,并如实提示。
  */
 function applyChecks(ctx, results, point) {
     const data = peekData(ctx);
-    const out = { invalidated: [], foldedTouched: [], notices: [], changed: false, rolledBack: false, pointsDropped: 0 };
+    const out = { invalidated: [], foldedTouched: [], notices: [], changed: false, rolledBack: false, pointsDropped: 0, unreachable: false };
     if (!data) return out;
 
     // ① 先处理回退:被删的链内札记 → 取最早的那一版
@@ -308,7 +308,7 @@ function applyChecks(ctx, results, point) {
     for (const res of results) {
         if (res.status !== 'gone' || !res.cap.folded) continue;
         const j = versionIndexOf(data, res.cap.id);
-        if (j < 0) continue;
+        if (j < 0) { out.unreachable = true; continue; } // 比最早的存档还早:退不回去,长期记忆里会留着它的内容
         goneIds.add(res.cap.id);
         if (minJ < 0 || j < minJ) minJ = j;
     }
@@ -344,7 +344,9 @@ function applyChecks(ctx, results, point) {
         out.invalidated.push(cap);
         out.changed = true;
     }
-    if (out.pointsDropped) {
+    if (out.unreachable) {
+        out.notices.push('长期记忆里还留着已删楼层的内容,而且没有够早的存档可以退回。建议清除数据后重新补建');
+    } else if (out.pointsDropped) {
         out.notices.push('已并入长期记忆的楼层被删,相关锚点已清理,请手动检查前情');
     }
     if (out.rolledBack || out.pointsDropped) rebuildText(data);

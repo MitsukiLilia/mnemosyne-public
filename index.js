@@ -15,7 +15,7 @@ import { createPanel } from './ui/panel.js';
 import { ICON_MENU } from './ui/icons.js';
 
 // 自报家门:排查「更新了却在跑旧码」时,控制台比对版本号即知真伪。
-export const MNEMO_VERSION = '0.5.5';
+export const MNEMO_VERSION = '0.5.6';
 globalThis.__MNEMO_VERSION = MNEMO_VERSION;
 console.info(`[Mnemosyne] v${MNEMO_VERSION} 已加载`);
 
@@ -144,9 +144,18 @@ function ensureFab() {
     fab.addEventListener('pointercancel', () => { drag = null; });
 }
 
+let wasEnabled = null;
 function onSettingsChanged() {
     const ctx = getCtx();
+    const enabled = !!getSettings(ctx).enabled;
     ensureFab();
+    if (enabled && wasEnabled === false && peekData(ctx)) {
+        // 关闭期间的编辑、删楼都没有核对过:重新启用时整本核对一次
+        beginEvent(ctx);
+        const res = verifyAll(ctx);
+        if (res.changed) handleVerify(ctx, res, '关闭期间有楼层被改动');
+    }
+    wasEnabled = enabled;
     inject.refreshInject(ctx);
     if (getSettings(ctx).enabled) { hide.syncReserve(ctx, getSettings(ctx).reserve); kick(ctx); }
 }
@@ -154,6 +163,7 @@ function onSettingsChanged() {
 function main() {
     panel = createPanel({ getCtx, onSettingsChanged });
     const ctx = getCtx();
+    wasEnabled = !!getSettings(ctx).enabled;
     const { eventSource, eventTypes: ev } = ctx;
 
     eventSource.on(ev.MESSAGE_RECEIVED, onReceived);

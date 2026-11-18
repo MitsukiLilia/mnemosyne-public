@@ -518,7 +518,8 @@ T('T5 折叠:阈值/四节/润色回落/撤销', async () => {
     S({ memoryVersions: 1 });
     const r2 = await recorder.foldNowExclusive(ctxNow());
     const d = data();
-    check('T5.9 第二次折叠:最新一版的折叠前 = 第一版全文', d.versions.length === 1 && d.versions[0].before.text === M1.text && d.memory.text !== M1.text);
+    const live5 = d.versions.filter(v => !v.cp);
+    check('T5.9 第二次折叠:最新一版的折叠前 = 第一版全文(更早那版降为存档点)', live5.length === 1 && live5[0].before.text === M1.text && d.memory.text !== M1.text && d.versions.length === 2 && d.versions[0].cp === true, `len=${d.versions.length}`);
     check('T5.10 被挤出链尾的已折叠札记保留正文、不并成占位(供关键词召回)', d.capsules.length === 14 && d.capsules.filter(c => c.folded).every(c => c.text.length > 0 && c.tokens > 0), `capsules=${d.capsules.length}`);
     const cap = d.capsules.filter(c => c.folded);
     check('T5.11 合并后的占位范围连续且指纹有效', cap.every(c => { const r = idxOfCap(c); return r.fi >= 0 && stateMod.rangeHash(ctxNow(), r.fi, r.ti) === c.rangeHash; }));
@@ -526,7 +527,7 @@ T('T5 折叠:阈值/四节/润色回落/撤销', async () => {
     const undoneIds = d.versions[d.versions.length - 1].foldedIds.slice();
     const ok = fold.undoFold(ctxNow());
     const d2 = data();
-    check('T5.12 撤销:长期记忆回到上一版', ok && d2.memory.text === M1.text && d2.versions.length === 0);
+    check('T5.12 撤销:长期记忆回到上一版,存档点不算可撤销', ok && d2.memory.text === M1.text && fold.undoableCount(d2) === 0 && fold.undoFold(ctxNow()) === false && data().memory.text === M1.text);
     check('T5.13 撤销:被折叠的札记恢复原文且不再折叠', undoneIds.every(id => { const c = d2.capsules.find(x => x.id === id); return c && !c.folded && c.text.length > 0; }));
     eq('T5.14 再撤销一次无效', fold.undoFold(ctxNow()), false);
     // 润色失败回落草稿
@@ -823,12 +824,12 @@ T('T13 版本链:连续折叠/连续撤销/挤出链尾', async () => {
     check('T13.10 链长 2 时第一版仍在,札记正文仍保留', data().versions.length === 2 && ids1.every(id => data().capsules.find(c => c.id === id)?.text.length > 0));
     await recorder.foldNowExclusive(ctxNow());
     const d = data();
-    eq('T13.11 第三次折叠把最旧一版挤出,链长仍是 2', d.versions.length, 2);
+    check('T13.11 第三次折叠:最近 2 版照旧,最旧一版降为存档点', d.versions.length === 3 && d.versions[0].cp === true && fold.undoableCount(d) === 2 && d.versions[0].before === null, `len=${d.versions.length}`);
     check('T13.12 被挤出那版的札记:正文仍保留(不清空)', ids1.every(id => { const c = d.capsules.find(x => x.id === id); return c && c.text.length > 0 && c.tokens > 0; }));
     const inChain = memMod.protectedIds(d);
     check('T13.13 链内的札记正文仍在', [...inChain].every(id => d.capsules.find(c => c.id === id)?.text.length > 0));
-    const plain = d.capsules.filter(c => c.folded && !inChain.has(c.id));
-    check('T13.14 被挤出的札记不并成占位,points 全部保留(8 则札记×2 点)', plain.length === ids1.length && plain.reduce((a, c) => a + c.points.length, 0) === ids1.length * 2, `caps=${plain.length} points=${plain.reduce((a, c) => a + c.points.length, 0)}`);
+    const plain = ids1.map(id => d.capsules.find(c => c.id === id)).filter(c => c && c.folded);
+    check('T13.14 降为存档点那版的札记不并成占位,points 全部保留(8 则札记×2 点)', plain.length === ids1.length && plain.reduce((a, c) => a + c.points.length, 0) === ids1.length * 2, `caps=${plain.length} points=${plain.reduce((a, c) => a + c.points.length, 0)}`);
     check('T13.15 占位里每个点的 id 互不相同', new Set(plain.flatMap(c => c.points.map(p => p.id))).size === ids1.length * 2);
 });
 
@@ -865,6 +866,91 @@ T('T14 删楼删到链内已折叠札记:回退 + 重新整理', async () => {
     check('T14.10 回退后自动重新折叠(不等新消息)', fx.calls.merge > merge0 && data().versions.length >= 2, `merge ${merge0}→${fx.calls.merge} versions=${data().versions.length}`);
 });
 
+T('T14c 存档点:删到比最近几版更早的楼也能退回', async () => {
+    const keep = fold.foldConfig.checkpointFloors;
+    try {
+        // 间隔调小:三次折叠(8/4/2 则)各自成为一个节点
+        fold.foldConfig.checkpointFloors = 4;
+        await resetWorld({ reserve: 3, memoryVersions: 1 });
+        await loadHistory(18); await backfillAll();
+        S({ autoRecord: false });
+        await recorder.foldNowExclusive(ctxNow());
+        const m1Text = data().memory.text;
+        await recorder.foldNowExclusive(ctxNow());
+        await recorder.foldNowExclusive(ctxNow());
+        let d = data();
+        check('T14c.1 最近 1 版 + 2 个存档点,各自吞 8/4/2', d.versions.length === 3 && d.versions[0].cp && d.versions[1].cp && !d.versions[2].cp
+            && d.versions.map(v => v.foldedIds.length).join() === '8,4,2', JSON.stringify(d.versions.map(v => [!!v.cp, v.foldedIds.length])));
+        check('T14c.2 存档点不留全文副本', d.versions[1].before.text === '' && Object.keys(d.versions[1].before.sections || {}).length > 0);
+        // 删掉第二批第一则札记的终点楼及之后所有楼:落在第二个存档点里,早就不在「最近 1 版」了
+        const c8 = d.capsules[8];
+        const cut = idxOfCap(c8).ti;
+        chat.splice(cut);
+        await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
+        d = data();
+        eq('T14c.3 长期记忆退回到第一次折叠后的内容', d.memory.text, m1Text);
+        check('T14c.4 链截到那个存档点之前', d.versions.length === 1 && d.versions[0].cp === true);
+        check('T14c.5 前 8 则仍折叠,被删的札记都移除', d.capsules.length === 8 && d.capsules.every(c => c.folded), `caps=${d.capsules.length}`);
+        check('T14c.6 提示已回退,没有「退不回去」的提示', status.notices.some(n => n.msg.includes('长期记忆已回退到较早版本')) && !status.notices.some(n => n.msg.includes('没有够早的存档')), JSON.stringify(status.notices.map(n => n.msg)));
+
+        // 间隔够大:更早的版本并进同一个存档点,退回时一并恢复
+        fold.foldConfig.checkpointFloors = 1000;
+        await resetWorld({ reserve: 3, memoryVersions: 1 });
+        await loadHistory(18); await backfillAll();
+        S({ autoRecord: false });
+        for (let i = 0; i < 3; i++) await recorder.foldNowExclusive(ctxNow());
+        d = data();
+        check('T14c.7 只留 1 个存档点,并进了第二版吞掉的札记(8+4)', d.versions.length === 2 && d.versions[0].cp && d.versions[0].foldedIds.length === 12 && d.versions[0].before === null, JSON.stringify(d.versions.map(v => [!!v.cp, v.foldedIds.length])));
+        const cut2 = idxOfCap(d.capsules[10]).ti; // 第二批里的札记
+        chat.splice(cut2);
+        await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
+        d = data();
+        check('T14c.8 退回到最早的存档:长期记忆清空,幸存的札记全部恢复成未折叠', d.memory === null && d.versions.length === 0 && d.capsules.length === 10 && d.capsules.every(c => !c.folded && c.text.length > 0), `mem=${!!d.memory} caps=${d.capsules.length} folded=${d.capsules.filter(c => c.folded).length}`);
+
+        // 旧聊天:没有存档点,退不回去时如实提示
+        await resetWorld({ reserve: 3, memoryVersions: 1 });
+        await loadHistory(18); await backfillAll();
+        S({ autoRecord: false });
+        await recorder.foldNowExclusive(ctxNow());
+        await recorder.foldNowExclusive(ctxNow());
+        data().versions = data().versions.filter(v => !v.cp); // 模拟加存档点之前的数据:更早的版本已经丢了
+        const before = data().memory.text;
+        chat.splice(idxOfCap(data().capsules[2]).ti);
+        await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
+        check('T14c.9 没有够早的存档:提示清除后补建', status.notices.some(n => n.msg.includes('没有够早的存档可以退回')), JSON.stringify(status.notices.map(n => n.msg)));
+    } finally {
+        fold.foldConfig.checkpointFloors = keep;
+    }
+});
+
+T('T6b 关闭插件:提醒还有楼处于隐藏;重新启用时补一次核对', async () => {
+    await resetWorld({ reserve: 3 });
+    await loadHistory(12); await backfillAll();
+    S({ autoRecord: false });
+    const hidden = data().hiddenIds.length;
+    check('T6b.0 前置:有隐藏的楼', hidden > 0);
+    api.panel.open('settings');
+    const root = () => document.getElementById('mnemosyne-host').shadowRoot;
+    root().querySelector('[data-action="set-enabled"]').click();
+    await new Promise(r => setTimeout(r, 20));
+    check('T6b.1 关闭时弹出提醒', S({}).enabled === false && root().textContent.includes(`还有 ${hidden} 楼处于隐藏状态`), root().querySelector('.mn-toast')?.textContent || '');
+    api.panel.open('home');
+    check('T6b.2 首页常驻提示', root().textContent.includes(`插件已关闭,但还有 ${hidden} 楼处于隐藏状态`));
+    // 关闭期间改了一楼:没有核对
+    const n0 = data().capsules.length;
+    const fi = idxOfCap(data().capsules[1]).fi;
+    chat[fi].mes = chat[fi].mes + '(关闭期间改的)';
+    await eventSource.emit(eventTypes.MESSAGE_EDITED, fi);
+    eq('T6b.3 关闭期间不核对', data().capsules.length, n0);
+    api.panel.open('settings');
+    root().querySelector('[data-action="set-enabled"]').click();
+    await new Promise(r => setTimeout(r, 20));
+    check('T6b.4 重新启用:补核对,改过的那则作废', S({}).enabled === true && data().capsules.length === n0 - 1, `caps=${data().capsules.length}`);
+    api.panel.open('home');
+    check('T6b.5 启用后首页不再提示', !root().textContent.includes('插件已关闭'));
+    api.panel.close?.();
+});
+
 T('T15 删楼删到占位札记:points 按 at 丢弃', async () => {
     await resetWorld({ reserve: 3, memoryVersions: 1 });
     await loadHistory(16); await backfillAll();
@@ -872,6 +958,7 @@ T('T15 删楼删到占位札记:points 按 at 丢弃', async () => {
     await recorder.foldNowExclusive(ctxNow());
     // 模拟 v0.4.x 留下的旧数据:第一批折叠的札记已清空正文(M4 之后新折叠的不会这样)
     for (const c of data().capsules.filter(x => x.folded)) { c.text = ''; c.tokens = 0; }
+    data().versions.length = 0; // 旧数据里这一版早已不在链上(那时还没有存档点)
     await recorder.foldNowExclusive(ctxNow());
     let d = data();
     const P = d.capsules[0];

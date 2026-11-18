@@ -6,7 +6,7 @@ import { activeAnchors, anchorLine, retiredAnchors, sectionsFromText } from '../
 import { getSettings, saveSettings, DEFAULT_SETTINGS } from '../core/settings.js';
 import { pushNotice, status, subscribe } from '../core/bus.js';
 import { clearChatData, clearSkipped, countPending, foldNowExclusive, kick, rewriteCapsule, setSource, skippedList, startBackfill, stopBackfill, tidyAnchorsExclusive } from '../core/recorder.js';
-import { editableMemoryText, restoreAnchor, retireAnchor, saveMemoryText, undoFold, unfoldedTokens } from '../core/fold.js';
+import { editableMemoryText, restoreAnchor, retireAnchor, saveMemoryText, undoFold, undoableCount, unfoldedTokens } from '../core/fold.js';
 import { reconcile, restoreAll } from '../core/hide.js';
 import { PART_KEYS, injectStats, refreshInject } from '../core/inject.js';
 import { detectCandidates, isNameOk, sourceLabel, sourceOf } from '../core/extract.js';
@@ -191,6 +191,10 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             const ranges = skipped.slice(0, 6).map(it => it.fi === it.ti ? `第 ${it.fi + 1} 楼` : `第 ${it.fi + 1}–${it.ti + 1} 楼`).join('、') + (skipped.length > 6 ? ` 等 ${skipped.length} 处` : '');
             notes += noteRow('err', I.ICON_WARN, `<b>有 ${skipped.length} 轮被模型拒绝,没有记录</b><p>${esc(ranges)}。这些楼不会被隐藏,主模型仍能看到原文;可以手动写进长期记忆,或换个模型后重试。</p>`, esc(skipped[skipped.length - 1].reason), `<div class="mn-links"><button class="mn-link" data-action="retry-skipped">${I.ICON_REFRESH}<span>清除标记并重试</span></button></div>`);
         }
+        const hiddenNow = data?.hiddenIds?.length || 0;
+        if (!s.enabled && hiddenNow) {
+            notes += noteRow('err', I.ICON_WARN, `<b>插件已关闭,但还有 ${hiddenNow} 楼处于隐藏状态</b><p>模型现在看不到这些楼,也看不到记忆。只是临时关一下可以不管;打算长期关闭的话,点下面的「恢复全部隐藏」。</p>`);
+        }
         if (status.backlog > 0 && !bf.running) {
             notes += noteRow('', I.ICON_BOOK, `<p>有 ${status.backlog} 轮旧对话还没有记录,自动记录不会一次处理这么多,请用下面的「补建历史」。</p>`);
         }
@@ -363,7 +367,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
         const mem = data?.memory;
         const un = data ? unfoldedTokens(data) : 0;
         const busy = !!status.busy;
-        const nv = data?.versions?.length || 0;
+        const nv = undoableCount(data);
         const editLink = ui.editingMem ? '' : `<button class="mn-linkbtn mn-edit-link" data-action="edit-mem" aria-label="编辑" title="编辑">${I.ICON_PEN}</button>`;
         let html = pageHead('长期记忆', `${mem ? `${mem.text.length} 字 · ${fmtTime(mem.ts)}` : '尚未生成'}`, editLink);
         html += `<p class="mn-sec-sub mn-mem-meta">未折叠的札记 ${un} / ${s.foldThreshold} tokens,超过后会自动折叠最早的一半 · 可撤销 ${nv} 次</p>`;
@@ -569,7 +573,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             case 'save-mem': await saveMemoryText(c, root.querySelector('[data-edit="mem"]').value); ui.editingMem = false; render(); return;
             case 'undo-fold': {
                 const ok = undoFold(c);
-                toast(ok ? `已撤销,还可撤销 ${peekData(c)?.versions?.length || 0} 次` : '没有可撤销的折叠');
+                toast(ok ? `已撤销,还可撤销 ${undoableCount(peekData(c))} 次` : '没有可撤销的折叠');
                 return;
             }
             case 'retire-anchor': retireAnchor(c, id); render(); return;
@@ -616,7 +620,13 @@ export function createPanel({ getCtx, onSettingsChanged }) {
                 setSource(c, { rule: type === 'details' ? { type, title: val } : { type, tag: val }, foreshadowTag: fore });
                 toast('已应用'); return;
             }
-            case 'set-enabled': s.enabled = !s.enabled; saveSettings(c); onSettingsChanged?.(); render(); return;
+            case 'set-enabled': {
+                s.enabled = !s.enabled; saveSettings(c); onSettingsChanged?.();
+                const hidden = peekData(c)?.hiddenIds?.length || 0;
+                if (!s.enabled && hidden) toast(`已关闭。还有 ${hidden} 楼处于隐藏状态,模型现在看不到它们,也看不到记忆`);
+                else render();
+                return;
+            }
             case 'set-fab': s.showFab = !s.showFab; saveSettings(c); onSettingsChanged?.(); render(); return;
             case 'set-capi': s.customApi.enabled = !s.customApi.enabled; saveSettings(c); render(); return;
             case 'fetch-models': {
