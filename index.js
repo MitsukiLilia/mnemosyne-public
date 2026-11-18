@@ -2,7 +2,7 @@
 // 事件处理的原则(性能铁律):每个事件只处理受影响的楼层,不整本重算;所有写入走 scheduleSave 合并。
 import {
     beginEvent, consumeDeletePoint, noteAppend, peekData, scheduleSave, stats as stateStats,
-    syncRefs, verifyAfter, verifyAll, verifyFloor, ensureData,
+    syncRefs, verifyAfter, verifyAll, verifyFloor, ensureData, floorId,
 } from './core/state.js';
 import { getSettings, saveSettings } from './core/settings.js';
 import { kick, perf, config as recorderConfig, setGenerating, resetRecorderRuntime, whenIdle } from './core/recorder.js';
@@ -15,7 +15,7 @@ import { createPanel } from './ui/panel.js';
 import { ICON_MENU } from './ui/icons.js';
 
 // 自报家门:排查「更新了却在跑旧码」时,控制台比对版本号即知真伪。
-export const MNEMO_VERSION = '0.5.4';
+export const MNEMO_VERSION = '0.5.5';
 globalThis.__MNEMO_VERSION = MNEMO_VERSION;
 console.info(`[Mnemosyne] v${MNEMO_VERSION} 已加载`);
 
@@ -59,6 +59,12 @@ function onReceived() {
     const ctx = getCtx();
     if (!getSettings(ctx).enabled) return;
     beginEvent(ctx);
+    // 「继续」是在最后一楼后面接着写,酒馆只发 MESSAGE_RECEIVED:这一楼要是已经记录过,札记就对不上了,核对一次
+    const last = (ctx.chat?.length ?? 0) - 1;
+    if (last >= 0 && floorId(ctx.chat[last])) {
+        const res = verifyFloor(ctx, last);
+        if (res.changed) handleVerify(ctx, res, `第 ${last + 1} 楼变了`);
+    }
     noteAppend(ctx);
     hide.syncReserve(ctx, getSettings(ctx).reserve);
     inject.refreshInject(ctx);
@@ -157,7 +163,10 @@ function main() {
     eventSource.on(ev.MESSAGE_SWIPED, onFloorChanged);
     eventSource.on(ev.MESSAGE_DELETED, onDeleted);
     eventSource.on(ev.CHAT_CHANGED, onChatChanged);
-    if (ev.GENERATION_STARTED) eventSource.on(ev.GENERATION_STARTED, onGenStart);
+    // 「生成开始」听 GENERATION_AFTER_COMMANDS:从输入框发斜杠指令时酒馆也会发 GENERATION_STARTED,
+    // 随后直接返回、不发结束事件,听它会让「生成中」一直挂着。AFTER_COMMANDS 只在真要生成时才发。
+    const genStartEv = ev.GENERATION_AFTER_COMMANDS || ev.GENERATION_STARTED;
+    if (genStartEv) eventSource.on(genStartEv, onGenStart);
     if (ev.GENERATION_ENDED) eventSource.on(ev.GENERATION_ENDED, onGenEnd);
     if (ev.GENERATION_STOPPED) eventSource.on(ev.GENERATION_STOPPED, onGenEnd);
 

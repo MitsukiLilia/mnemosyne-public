@@ -241,7 +241,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             html += `<section class="mn-cap${open ? ' open' : ''}" data-cap="${esc(cap.id)}">
                 <button class="mn-cap-head" data-action="toggle-cap" data-id="${esc(cap.id)}" aria-expanded="${open}">
                     <span class="mn-cap-main"><span class="mn-cap-title">${esc(cap.title || '(无标题)')}</span>
-                    <span class="mn-cap-meta">${esc(capRange(c, cap))} · ${cap.tokens || 0} tokens · ${fmtTime(cap.ts)}</span></span>
+                    <span class="mn-cap-meta">${esc(capRange(c, cap))} · ${Number(cap.tokens) || 0} tokens · ${fmtTime(cap.ts)}</span></span>
                     <span class="mn-chev${open ? ' down' : ''}">${I.ICON_CHEVRON}</span>
                 </button>`;
             if (open) {
@@ -292,7 +292,7 @@ export function createPanel({ getCtx, onSettingsChanged }) {
             html += '<div class="mn-agroup-body">';
             for (const a of group.slice(0, limit)) {
                 const itemMeta = a.k === '物品'
-                    ? `${a.d ? `<span class="mn-anchor-meta">来历 · ${esc(a.d)}</span>` : ''}${a.now?.t ? `<span class="mn-anchor-meta">现状 · ${esc(a.now.t)}${a.now.at ? ` #${a.now.at}` : ''}</span>` : ''}`
+                    ? `${a.d ? `<span class="mn-anchor-meta">来历 · ${esc(a.d)}</span>` : ''}${a.now?.t ? `<span class="mn-anchor-meta">现状 · ${esc(a.now.t)}${a.now.at ? ` #${esc(a.now.at)}` : ''}</span>` : ''}`
                     : '';
                 html += `<div class="mn-anchor">${pearl}
                     <span class="mn-anchor-main"><span class="mn-anchor-text">${esc(a.t)}</span>${itemMeta}<span class="mn-anchor-meta">${esc(anchorRange(c, a.cap))}${a.key ? ` · ${esc(a.key)}` : ''}</span></span>

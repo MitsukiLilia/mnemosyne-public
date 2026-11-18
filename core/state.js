@@ -384,7 +384,17 @@ function repairFolded(ctx, cap, res, point) {
 export function verifyFloor(ctx, index) {
     const data = peekData(ctx);
     const msg = ctx.chat[index];
-    if (!data || !data.capsules.length || !floorId(msg)) return applyChecks(ctx, [], index);
+    if (!data || !data.capsules.length) return applyChecks(ctx, [], index);
+    if (!floorId(msg)) {
+        // 这一楼没有 id:多半只是还没被记录过。但 swipe 时酒馆会把 message.extra 整个换掉,已记录的楼 id 也跟着没了,
+        // 覆盖它的札记端点就找不到了——当成被删处理,否则旧札记会一直留着、同一轮又被记第二遍。
+        const lost = [];
+        for (const cap of data.capsules) {
+            const { fi, ti } = resolveCapsule(ctx, cap);
+            if (fi < 0 || ti < 0 || ti < fi) lost.push({ cap, status: 'gone', fi, ti });
+        }
+        if (lost.length) return applyChecks(ctx, lost, index);
+    }
     const hit = findCapsuleCovering(ctx, data, index);
     if (!hit) return applyChecks(ctx, [], index);
     return applyChecks(ctx, [checkCapsule(ctx, hit.cap)], index);

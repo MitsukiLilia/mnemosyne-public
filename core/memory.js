@@ -98,6 +98,17 @@ export function normalizeKeys(raw) {
     return out;
 }
 
+/** 别名拼回「a/b/c」,总长不超过 max:放不下的别名整个丢掉,不从中间截(截出来的半个词会变成到处都能匹配的关键词)。 */
+function joinKeys(keys, max) {
+    let s = '';
+    for (const k of keys) {
+        const next = s ? `${s}/${k}` : k;
+        if (next.length > max) { if (!s) s = k.slice(0, max); break; }
+        s = next;
+    }
+    return s;
+}
+
 /** 必留点解析:格式不对、类别不认识的丢掉,永远返回数组(不因为它让整则札记失败)。 */
 export function normalizePoints(raw, max = 5) {
     if (!Array.isArray(raw)) return [];
@@ -111,7 +122,7 @@ export function normalizePoints(raw, max = 5) {
         const t = String(p.t ?? '').replace(/\s+/g, ' ').trim().slice(0, POINT_TEXT_MAX);
         if (!t || seen.has(k + t)) continue;
         seen.add(k + t);
-        const pt = { k, t, key: keysOf(p.key).join('/').slice(0, POINT_KEY_MAX) };
+        const pt = { k, t, key: joinKeys(keysOf(p.key), POINT_KEY_MAX) };
         if (k === ITEM_KIND) { // 来历只属于物品;空串当没有
             const d = String(p.d ?? '').replace(/\s+/g, ' ').trim().slice(0, POINT_ORIGIN_MAX);
             if (d) pt.d = d;

@@ -82,7 +82,7 @@ const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; logEl.scrollTop
 const eventTypes = {
     MESSAGE_RECEIVED: 'message_received', MESSAGE_SENT: 'message_sent', MESSAGE_EDITED: 'message_edited',
     MESSAGE_UPDATED: 'message_updated', MESSAGE_SWIPED: 'message_swiped', MESSAGE_DELETED: 'message_deleted',
-    CHAT_CHANGED: 'chat_id_changed', GENERATION_STARTED: 'generation_started', GENERATION_ENDED: 'generation_ended',
+    CHAT_CHANGED: 'chat_id_changed', GENERATION_STARTED: 'generation_started', GENERATION_AFTER_COMMANDS: 'GENERATION_AFTER_COMMANDS', GENERATION_ENDED: 'generation_ended',
     GENERATION_STOPPED: 'generation_stopped', CHAT_COMPLETION_PROMPT_READY: 'chat_completion_prompt_ready',
 };
 class MockEventEmitter {
@@ -226,6 +226,7 @@ async function speak(k) {
     const u = pushFloor(true, k);
     await eventSource.emit(eventTypes.MESSAGE_SENT, u);
     await eventSource.emit(eventTypes.GENERATION_STARTED, 'normal', {}, false);
+    await eventSource.emit(eventTypes.GENERATION_AFTER_COMMANDS, 'normal', {}, false);
     const a = pushFloor(false, k);
     await eventSource.emit(eventTypes.MESSAGE_RECEIVED, a, 'normal');
     await eventSource.emit(eventTypes.GENERATION_ENDED, chat.length);
@@ -285,12 +286,18 @@ T('T1 自动记录:新一轮移出保留区', async () => {
     // 酒馆正在生成时不发记录请求
     const before = fx.calls.batch;
     await eventSource.emit(eventTypes.GENERATION_STARTED, 'normal', {}, false);
+    await eventSource.emit(eventTypes.GENERATION_AFTER_COMMANDS, 'normal', {}, false);
     const u = pushFloor(true, 4); await eventSource.emit(eventTypes.MESSAGE_SENT, u);
     const a = pushFloor(false, 4); await eventSource.emit(eventTypes.MESSAGE_RECEIVED, a, 'normal');
     await new Promise(r => setTimeout(r, 60));
     eq('T1.12 GENERATION_ENDED 之前不发记录请求', fx.calls.batch, before);
     await eventSource.emit(eventTypes.GENERATION_ENDED, chat.length); await api.whenIdle();
     check('T1.13 生成结束后补记', fx.calls.batch === before + 1 && data().capsules.length === 2, `batch=${fx.calls.batch} caps=${data().capsules.length}`);
+    // 斜杠指令:酒馆只发 GENERATION_STARTED 就返回,没有结束事件,不能算生成中
+    await eventSource.emit(eventTypes.GENERATION_STARTED, 'normal', {}, false);
+    check('T1.13b 只有 GENERATION_STARTED(斜杠指令)不算生成中', status.generating === false);
+    await eventSource.emit(eventTypes.GENERATION_AFTER_COMMANDS, 'normal', {}, true);
+    check('T1.13c dry run 不算生成中', status.generating === false);
     // 失败不轰炸
     fx.batchFail = true; const b0 = fx.calls.batch;
     await speak(5);
@@ -394,6 +401,31 @@ T('T3 编辑/swipe:只作废覆盖该楼的札记', async () => {
     check('T3.11 重新记录后楼层再次隐藏', chat[0].is_system && chat[6].is_system && chat[7].is_system);
     const cap6 = d2.capsules.find(c => c.fromId === chat[6].extra.mnemo_id);
     check('T3.12 新札记用的是原楼 id(身份稳定)且含新文本', !!cap6 && cap6.text.includes('改'), cap6?.text);
+});
+
+
+T('T3b swipe 换掉 extra、继续:已记录的楼也要核对', async () => {
+    await setupCaps(12);
+    S({ autoRecord: false });
+    const caps = data().capsules;
+    const n0 = caps.length;
+    // 真酒馆的 swipe 会把 message.extra 整个换掉,楼层 id 跟着没了
+    const cap = caps[2];
+    const ti = chat.findIndex(m => m.extra?.mnemo_id === cap.toId);
+    check('T3b.0 前置:找到札记的末楼', ti >= 0);
+    chat[ti].extra = {}; chat[ti].mes = chat[ti].mes + '(另一个 swipe)';
+    await eventSource.emit(eventTypes.MESSAGE_SWIPED, ti);
+    check('T3b.1 末楼 id 没了的札记作废', data().capsules.length === n0 - 1 && !data().capsules.some(c => c.id === cap.id), `caps=${data().capsules.length}`);
+    // 回退到某则札记的末楼,再「继续」:只有 MESSAGE_RECEIVED
+    const lastCap = data().capsules[data().capsules.length - 1];
+    const li = chat.findIndex(m => m.extra?.mnemo_id === lastCap.toId);
+    chat.splice(li + 1);
+    await eventSource.emit(eventTypes.MESSAGE_DELETED, chat.length);
+    const n1 = data().capsules.length;
+    check('T3b.2 前置:回退后末楼那则札记还在', data().capsules.some(c => c.id === lastCap.id));
+    chat[li].mes = chat[li].mes + '(接着写了一段)';
+    await eventSource.emit(eventTypes.MESSAGE_RECEIVED, li, 'continue');
+    check('T3b.3 继续之后末楼的札记作废', data().capsules.length === n1 - 1 && !data().capsules.some(c => c.id === lastCap.id), `caps=${data().capsules.length} n1=${n1}`);
 });
 
 T('T4 删楼:只核对删除点之后的札记', async () => {
