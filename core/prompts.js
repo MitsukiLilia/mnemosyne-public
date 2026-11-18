@@ -143,41 +143,70 @@ export const RECALL_HEADER = '以下是与眼下剧情相关的较早记录,保�
 export const MEMORY_HEADER = '以下是此前剧情的记忆(长期记忆与近期记录),按时间顺序,仅供参照,不要在回复中复述或提及这份记忆本身。';
 
 // ── 记录语言 ──
-// 提示词本身始终是中文;记录语言选日语时,在系统提示词末尾追加这一段,让模型用日语书写自由内容。
-// 程序靠它们识别结构的固定标签(字段名、类别名、人物块行首)不换,注入给主模型时再由 localizeInjection 换成日语写法。
+// 提示词本身始终是中文;记录语言选日语或英语时,在系统提示词末尾追加一段,让模型用那种语言书写自由内容。
+// 程序靠它们识别结构的固定标签(字段名、类别名、人物块行首)不换,注入给主模型时再由 localizeInjection 换成对应语言的写法。
+const FIXED_LABELS_NOTE = '以下是程序识别用的固定标签,照原样写,不要翻译:JSON 的字段名;k 的七个类别名(台词、物品、数字、称呼、约定、伏笔、推测);人物块的「### 名字」标题与行首的「倾向:」「当前:」「来由:」;「#楼层」的写法;现场快照里列出在场人物的那一行以「在场:」开头。';
+const freeTextNote = (langName) => `
+语言:凡是由你自由书写的内容,一律用${langName}写:标题、记录正文、必留点的短条与来历、现场快照、人物变化、各分节的正文、撤下锚点时写的结果,都是。从原文照抄的部分(台词、专有名词、关键词)保持原文,一个字都不改。
+${FIXED_LABELS_NOTE}`;
 const LANG_NOTES = {
-    ja: `
-语言:凡是由你自由书写的内容,一律用日语(日本語)写:标题、记录正文、必留点的短条与来历、现场快照、人物变化、各分节的正文、撤下锚点时写的结果,都是。从原文照抄的部分(台词、专有名词、关键词)保持原文,一个字都不改。
-以下是程序识别用的固定标签,照原样写,不要翻译:JSON 的字段名;k 的七个类别名(台词、物品、数字、称呼、约定、伏笔、推测);人物块的「### 名字」标题与行首的「倾向:」「当前:」「来由:」;「#楼层」的写法;现场快照里列出在场人物的那一行以「在场:」开头。`,
+    ja: freeTextNote('日语(日本語)'),
+    en: freeTextNote('英语(English)'),
 };
 /** 追加在系统提示词末尾的语言说明;默认(中文)为空串。 */
 export const langNote = (lang) => LANG_NOTES[lang] || '';
 
-const JA_TITLES = {
-    '前情': 'これまでのあらすじ', '人物与关系': '人物と関係', '当前状态': '現在の状況', '时间线': '時系列',
-    '未结事项': '未解決の事項', '锚点': '覚えておく要点', '相关的旧记录': '関連する過去の記録', '近期记录': '最近の記録',
+// 注入标签的各语言写法。titles/kinds 的键是存档里的中文标签;headers 与三句中文说明一一对应。
+const LOCALES = {
+    ja: {
+        titles: {
+            '前情': 'これまでのあらすじ', '人物与关系': '人物と関係', '当前状态': '現在の状況', '时间线': '時系列',
+            '未结事项': '未解決の事項', '锚点': '覚えておく要点', '相关的旧记录': '関連する過去の記録', '近期记录': '最近の記録',
+        },
+        recentNote: (n) => `(直近 ${n} 件。それ以前はあらすじを参照)`,
+        kinds: { '台词': '台詞', '物品': '物品', '数字': '数字', '称呼': '呼び方', '约定': '約束', '伏笔': '伏線', '推测': '推測' },
+        headers: [
+            [MEMORY_HEADER, 'これまでの物語の記憶(長期記憶と最近の記録)を時系列で示す。参照用であり、返答の中でこの記憶そのものを繰り返したり、言及したりしないこと。'],
+            [PEOPLE_HEADER, '以下は人物たちの今の向きを示す。行動の一貫性を保つために使い、復唱しない。変化の理由を本文で説明しない。古い状態が今も続いているとは限らず、新しく起きたことを優先する。'],
+            [RECALL_HEADER, '以下は今の展開に関わる過去の記録で、当時の細部を残している。思い出すための参考であり、復唱しない。'],
+        ],
+        origin: '｜由来:', itemNow: '｜現状:', unconfirmed: '（未確認）',
+        lean: '傾向$1', current: '現在$1', cause: '経緯$1', present: 'その場にいる人物$1',
+    },
+    en: {
+        titles: {
+            '前情': 'Story So Far', '人物与关系': 'Characters and Relationships', '当前状态': 'Current State', '时间线': 'Timeline',
+            '未结事项': 'Open Threads', '锚点': 'Details to Remember', '相关的旧记录': 'Related Earlier Records', '近期记录': 'Recent Records',
+        },
+        recentNote: (n) => ` (latest ${n} entries; earlier ones are covered in Story So Far)`,
+        kinds: { '台词': 'Line', '物品': 'Item', '数字': 'Number', '称呼': 'Form of address', '约定': 'Promise', '伏笔': 'Foreshadowing', '推测': 'Speculation' },
+        headers: [
+            [MEMORY_HEADER, 'Below is the memory of the story so far (long-term memory and recent records), in chronological order. It is for reference only; do not repeat it or mention the memory itself in your reply.'],
+            [PEOPLE_HEADER, 'Below is where each character is currently heading, to keep their behavior consistent. Do not repeat it, and do not explain the reasons for a change in the prose. An older state may no longer hold; what happened most recently takes precedence.'],
+            [RECALL_HEADER, 'Below are earlier records related to the current scene, kept with their original details. They are for recollection only; do not repeat them.'],
+        ],
+        origin: ' | Origin: ', itemNow: ' | Now: ', unconfirmed: ' (unconfirmed)',
+        lean: 'Tendency: ', current: 'Currently: ', cause: 'Reason: ', present: 'Present: ',
+        eatSpace: true, // 英语标签自带冒号后的空格,原文冒号后的空白要吃掉
+    },
 };
-const JA_KINDS = { '台词': '台詞', '物品': '物品', '数字': '数字', '称呼': '呼び方', '约定': '約束', '伏笔': '伏線', '推测': '推測' };
-const JA_HEADERS = [
-    [MEMORY_HEADER, 'これまでの物語の記憶(長期記憶と最近の記録)を時系列で示す。参照用であり、返答の中でこの記憶そのものを繰り返したり、言及したりしないこと。'],
-    [PEOPLE_HEADER, '以下は人物たちの今の向きを示す。行動の一貫性を保つために使い、復唱しない。変化の理由を本文で説明しない。古い状態が今も続いているとは限らず、新しく起きたことを優先する。'],
-    [RECALL_HEADER, '以下は今の展開に関わる過去の記録で、当時の細部を残している。思い出すための参考であり、復唱しない。'],
-];
-const JA_TITLE_RE = new RegExp(`^## (${Object.keys(JA_TITLES).join('|')})(?:\\(最近 (\\d+) 条,更早的见前情\\))?$`, 'gm');
-const JA_KIND_RE = new RegExp(`^\\[(${Object.keys(JA_KINDS).join('|')})\\] `, 'gm');
+const TITLE_RE = new RegExp(`^## (${Object.keys(LOCALES.ja.titles).join('|')})(?:\\(最近 (\\d+) 条,更早的见前情\\))?$`, 'gm');
+const KIND_RE = new RegExp(`^\\[(${Object.keys(LOCALES.ja.kinds).join('|')})\\] `, 'gm');
 
 /**
- * 注入文本的标签换成日语写法(只在记录语言为日语时调用)。存档和解析仍用中文标签,这里只改交给主模型的那份文本。
+ * 注入文本的标签换成记录语言的写法(记录语言为中文时原样返回)。存档和解析仍用中文标签,这里只改交给主模型的那份文本。
  * 只动行首的固定标签与三句说明,记录正文不碰。
  */
 export function localizeInjection(text, lang) {
-    if (lang !== 'ja' || !text) return text;
+    const L = LOCALES[lang];
+    if (!L || !text) return text;
+    const label = (zh) => new RegExp(`^${zh}([:：])${L.eatSpace ? '[ \\t]*' : ''}`, 'gm');
     let s = text;
-    for (const [zh, ja] of JA_HEADERS) s = s.split(zh).join(ja);
+    for (const [zh, tr] of L.headers) s = s.split(zh).join(tr);
     return s
-        .replace(JA_TITLE_RE, (m, t, n) => `## ${JA_TITLES[t]}${n ? `(直近 ${n} 件。それ以前はあらすじを参照)` : ''}`)
-        .replace(JA_KIND_RE, (m, k) => `[${JA_KINDS[k]}] `)
-        .replace(/｜来历:/g, '｜由来:').replace(/｜现状:/g, '｜現状:').replace(/（未证实）$/gm, '（未確認）')
-        .replace(/^倾向([:：])/gm, '傾向$1').replace(/^当前([:：])/gm, '現在$1').replace(/^来由([:：])/gm, '経緯$1')
-        .replace(/^在场(?:人物|人员)?([:：])/gm, 'その場にいる人物$1');
+        .replace(TITLE_RE, (m, t, n) => `## ${L.titles[t]}${n ? L.recentNote(n) : ''}`)
+        .replace(KIND_RE, (m, k) => `[${L.kinds[k]}] `)
+        .replace(/｜来历:/g, L.origin).replace(/｜现状:/g, L.itemNow).replace(/（未证实）$/gm, L.unconfirmed)
+        .replace(label('倾向'), L.lean).replace(label('当前'), L.current).replace(label('来由'), L.cause)
+        .replace(label('在场(?:人物|人员)?'), L.present);
 }
